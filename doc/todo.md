@@ -31,7 +31,7 @@
 - `ActionFeatureExtractorV2`
   - 输出字段：
     - `session_id, video_id, ts_sec, frame_idx`
-    - `track_id, person_id_raw, hand_side`
+    - `track_id, person_id_raw, person_track_id, hand_side`
     - `norm_x, norm_y, score`
     - `v_x, v_y, a_x, a_y`
     - `is_in_box, dist_to_box_center, box_id`
@@ -157,3 +157,58 @@
 - [ ] 完成首批标签定义与标注规范文档
 - [ ] 增加触发式切窗与低置信窗口清洗逻辑
 - [ ] 准备第一版 LSTM 训练脚本
+
+
+session_id
+本次推理会话 ID（每次 websocket 会话生成一次），用于区分不同运行批次。生成与传入见 main.py:470。
+
+video_id
+视频标识（由视频文件属性计算出的短哈希），用于区分不同视频来源。传入见 main.py:471。
+
+ts_sec
+当前样本在视频时间轴上的秒数，计算方式是 frame_count / video_fps。见 main.py:472 和写入 main.py:207。
+
+frame_idx
+帧序号（从 1 开始递增的处理帧计数）。见 main.py:473。
+
+track_id
+手部轨迹 ID，由最近邻匹配得到的“相对稳定”ID。赋值见 main.py:148。
+
+person_id_raw
+当前帧中人体检测/姿态结果的原始索引 p_idx，不是全局稳定 person ID。传入见 main.py:474。
+
+person_track_id
+跨帧稳定的人体轨迹 ID，由人物跟踪器按空间近邻持续分配，用于减少 `person_id_raw` 重排导致的串号。可把同一人的多帧样本关联到同一条人物时序。
+
+hand_side
+手的左右标记，取值为 left 或 right。见 main.py:138。
+
+norm_x
+手腕相对颈部的归一化横向坐标。计算为 (wrist_x - neck_x) / shoulder_width。见 main.py:134 和 main.py:136。
+
+norm_y
+手腕相对颈部的归一化纵向坐标。计算同上，用 shoulder_width 做尺度归一化。见 main.py:136。
+
+score
+该手腕关键点的置信度（来自姿态模型 keypoint score）。见 main.py:139。
+
+v_x
+归一化坐标在 x 方向的速度，近两帧差分除以时间间隔 dt。见 main.py:158。
+
+v_y
+归一化坐标在 y 方向的速度，计算方式与 v_x 相同。见 main.py:158。
+
+a_x
+归一化坐标在 x 方向的加速度，用三帧速度差分估计。见 main.py:165。
+
+a_y
+归一化坐标在 y 方向的加速度，计算方式与 a_x 相同。见 main.py:165。
+
+is_in_box
+是否进入任一标注框，多边形内判定结果。1 表示在框内，0 表示不在。见 main.py:194 和写入 main.py:219。
+
+dist_to_box_center
+手腕到目标框中心点的归一化距离（同样除以 shoulder_width）。见 main.py:192。
+
+box_id
+关联的框 ID。若在框内则是命中的框；否则是最近框；默认初值为 -1。见 main.py:180、main.py:196、main.py:202。
