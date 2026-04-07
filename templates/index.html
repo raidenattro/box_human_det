@@ -338,6 +338,7 @@ async function saveAndStartInference() {
 // 🎨 第三阶段：超高性能 Canvas 三屏渲染引擎 & HUD 面板
 // ========================================================
 const COCO_LINES = [[15,13],[13,11],[16,14],[14,12],[11,12],[5,11],[6,12],[5,6],[5,7],[6,8],[7,9],[8,10],[1,2],[0,1],[0,2],[1,3],[2,4],[3,5],[4,6]];
+let currentInferenceWs = null;
 
 function startRenderEngine() {
     const ctxRaw = document.getElementById('cvsRaw').getContext('2d');
@@ -347,10 +348,17 @@ function startRenderEngine() {
     // 显示 HUD 仪表盘
     document.getElementById('hudPanel').style.display = "flex";
     
+    if (currentInferenceWs) {
+        currentInferenceWs.close();
+    }
+
     let ws = new WebSocket(`ws://${window.location.host}/ws/inference`);
+    currentInferenceWs = ws;
     let streamImg = new Image();
+    let hasReceivedFrame = false;
     
     ws.onmessage = (event) => {
+        hasReceivedFrame = true;
         let data = JSON.parse(event.data);
         streamImg.src = "data:image/jpeg;base64," + data.image;
         
@@ -424,6 +432,34 @@ function startRenderEngine() {
                 ctxGrid.fillText("B" + box.box_id, x + cw/2 - 15, y + ch/2 + 6);
             });
         };
+    };
+
+    ws.onclose = () => {
+        document.getElementById('hudPanel').style.display = "none";
+        if (hasReceivedFrame) {
+            setUIStatus(
+                "✅ 推理结束",
+                "视频已播放完成，后端已停止推理并关闭连接。可重新上传视频继续分析。",
+                "#2ecc71"
+            );
+        } else {
+            setUIStatus(
+                "⚠️ 推理未启动",
+                "推理连接已关闭，可能尚未完成标注或后端提前结束。",
+                "#f39c12"
+            );
+        }
+        if (currentInferenceWs === ws) {
+            currentInferenceWs = null;
+        }
+    };
+
+    ws.onerror = () => {
+        setUIStatus(
+            "❌ 推理连接异常",
+            "与后端推理通道通信失败，请检查后端日志后重试。",
+            "#e74c3c"
+        );
     };
 }
 </script>

@@ -267,7 +267,30 @@ APP_STATE = {
     "video_path": "",
     "is_inferencing": False
 }
-JSON_FILE = "precise_boxes_new.json"
+BASE_LOCALDATA_DIR = "localdata"
+UPLOAD_DIR = os.path.join(BASE_LOCALDATA_DIR, "upload")
+UPLOAD_480P_DIR = os.path.join(UPLOAD_DIR, "480p")
+JSON_DIR = os.path.join(BASE_LOCALDATA_DIR, "json")
+CSV_DIR = os.path.join(BASE_LOCALDATA_DIR, "csv")
+JSON_FILE = os.path.join(JSON_DIR, "precise_boxes_new.json")
+COUNTER_FILE = os.path.join(BASE_LOCALDATA_DIR, "upload_counter.txt")
+
+
+def reserve_next_upload_id() -> int:
+    """Reserve a monotonically increasing upload id persisted on disk."""
+    os.makedirs(BASE_LOCALDATA_DIR, exist_ok=True)
+    current = 0
+    if os.path.exists(COUNTER_FILE):
+        try:
+            with open(COUNTER_FILE, "r", encoding="utf-8") as f:
+                current = int((f.read() or "0").strip())
+        except Exception:
+            current = 0
+
+    next_id = current + 1
+    with open(COUNTER_FILE, "w", encoding="utf-8") as f:
+        f.write(str(next_id))
+    return next_id
 
 det_model = None
 pose_model = None
@@ -284,9 +307,17 @@ async def read_root():
 
 @app.post("/upload_video")
 async def upload_video(file: UploadFile = File(...)):
-    os.makedirs("localdata", exist_ok=True)
-    raw_video_path = "localdata/current_demo_src.mp4"
-    compressed_video_path = "localdata/current_demo_480p.mp4"
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    os.makedirs(UPLOAD_480P_DIR, exist_ok=True)
+    os.makedirs(JSON_DIR, exist_ok=True)
+    os.makedirs(CSV_DIR, exist_ok=True)
+
+    upload_id = reserve_next_upload_id()
+    upload_tag = f"u{upload_id:06d}"
+
+    raw_video_path = os.path.join(UPLOAD_DIR, f"{upload_tag}_src.mp4")
+    compressed_video_path = os.path.join(UPLOAD_480P_DIR, f"{upload_tag}_480p.mp4")
+    upload_json_path = os.path.join(JSON_DIR, f"{upload_tag}_boxes.json")
 
     with open(raw_video_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -294,14 +325,20 @@ async def upload_video(file: UploadFile = File(...)):
     try:
         out_w, out_h = transcode_video_to_480p(raw_video_path, compressed_video_path)
         APP_STATE["video_path"] = compressed_video_path
+        APP_STATE["upload_id"] = upload_id
+        APP_STATE["upload_tag"] = upload_tag
+        APP_STATE["json_path"] = upload_json_path
         print(f"✅ 上传视频已转码: {compressed_video_path} ({out_w}x{out_h})")
     except Exception as e:
         # 转码失败时保底回退到原视频，避免阻断流程
         APP_STATE["video_path"] = raw_video_path
+        APP_STATE["upload_id"] = upload_id
+        APP_STATE["upload_tag"] = upload_tag
+        APP_STATE["json_path"] = upload_json_path
         print(f"⚠️ 480p 转码失败，回退原视频: {e}")
 
     APP_STATE["is_inferencing"] = False
-    return {"status": "success"}
+    return {"status": "success", "upload_id": upload_id, "upload_tag": upload_tag}
 
 @app.get("/get_first_frame")
 async def get_first_frame():
@@ -319,9 +356,11 @@ async def get_first_frame():
 @app.post("/save_annotation")
 async def save_annotation(data: dict):
     """前端自己算好网格后，把 JSON 丢给后端保存"""
-    with open(JSON_FILE, 'w', encoding='utf-8') as f:
+    os.makedirs(JSON_DIR, exist_ok=True)
+    json_path = APP_STATE.get("json_path", JSON_FILE)
+    with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4)
-    return {"status": "success"}
+    return {"status": "success", "json_path": json_path}
 
 @app.post("/start_inference")
 async def start_inference():
@@ -346,13 +385,16 @@ async def start_inference():
 async def websocket_inference(websocket: WebSocket):
     await websocket.accept()
     feature_extractor = None
+    cap = None
+
+    json_file_path = APP_STATE.get("json_path", JSON_FILE)
     
-    if not os.path.exists(JSON_FILE):
-        print(f"⚠️ [警告] 无法启动推理：未找到配置文件 {JSON_FILE}，请先完成前端标注！")
+    if not os.path.exists(json_file_path):
+        print(f"⚠️ [警告] 无法启动推理：未找到配置文件 {json_file_path}，请先完成前端标注！")
         await websocket.close()
         return
         
-    with open(JSON_FILE, 'r', encoding='utf-8') as f:
+    with open(json_file_path, 'r', encoding='utf-8') as f:
         config_data = json.load(f)
     boxes = config_data['boxes']
     for box in boxes:
@@ -374,6 +416,8 @@ async def websocket_inference(websocket: WebSocket):
     cached_collisions = []
 
     session_id = str(uuid.uuid4())[:8]
+    upload_id = int(APP_STATE.get("upload_id", 0))
+    upload_tag = APP_STATE.get("upload_tag", f"u{upload_id:06d}" if upload_id > 0 else "u000000")
     video_src = APP_STATE.get("video_path", "")
     if os.path.exists(video_src):
         f_stat = os.stat(video_src)
@@ -382,7 +426,8 @@ async def websocket_inference(websocket: WebSocket):
     else:
         video_id = "unknown"
 
-    csv_name = f"localdata/action_dataset_{session_id}.csv"
+    os.makedirs(CSV_DIR, exist_ok=True)
+    csv_name = os.path.join(CSV_DIR, f"action_dataset_{upload_tag}_s{session_id}.csv")
     feature_extractor = ActionFeatureExtractorV2(csv_filename=csv_name)
     hand_assigner = WristTrackAssigner(max_match_dist=150.0, stale_sec=1.0)
     
@@ -390,8 +435,9 @@ async def websocket_inference(websocket: WebSocket):
         while cap.isOpened() and APP_STATE["is_inferencing"]:
             ret, frame = cap.read()
             if not ret: 
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                continue
+                print("✅ 视频推理完成，停止当前会话")
+                APP_STATE["is_inferencing"] = False
+                break
                 
             frame_count += 1
             raw_frame = frame
