@@ -6,6 +6,12 @@ import os
 import shutil
 import asyncio
 import time
+import math
+import csv
+import uuid
+import hashlib
+from collections import deque
+from dataclasses import dataclass
 from typing import Tuple
 from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -23,6 +29,198 @@ register_all_modules()
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+
+
+@dataclass
+class TrackState:
+    abs_x: float
+    abs_y: float
+    ts_sec: float
+
+
+class WristTrackAssigner:
+    """Assign a stable hand track id with nearest-neighbor matching in pixel space."""
+
+    def __init__(self, max_match_dist=150.0, stale_sec=1.0):
+        self.max_match_dist = max_match_dist
+        self.stale_sec = stale_sec
+        self.next_id = 1
+        self.tracks = {}
+
+    def _cleanup(self, now_ts: float):
+        dead_keys = [k for k, st in self.tracks.items() if now_ts - st.ts_sec > self.stale_sec]
+        for k in dead_keys:
+            self.tracks.pop(k, None)
+
+    def assign(self, hand_side: str, abs_x: float, abs_y: float, now_ts: float) -> int:
+        self._cleanup(now_ts)
+        best_key = None
+        best_dist = 1e9
+
+        for (side, tid), st in self.tracks.items():
+            if side != hand_side:
+                continue
+            dist = math.hypot(abs_x - st.abs_x, abs_y - st.abs_y)
+            if dist < best_dist:
+                best_dist = dist
+                best_key = (side, tid)
+
+        if best_key is None or best_dist > self.max_match_dist:
+            tid = self.next_id
+            self.next_id += 1
+            self.tracks[(hand_side, tid)] = TrackState(abs_x=abs_x, abs_y=abs_y, ts_sec=now_ts)
+            return tid
+
+        _, tid = best_key
+        self.tracks[(hand_side, tid)] = TrackState(abs_x=abs_x, abs_y=abs_y, ts_sec=now_ts)
+        return tid
+
+
+class ActionFeatureExtractorV2:
+    """Collect per-frame hand interaction features for action model training."""
+
+    def __init__(self, csv_filename="localdata/action_dataset.csv", auto_flush_every=200):
+        self.history = {}
+        self.csv_filename = csv_filename
+        self.auto_flush_every = auto_flush_every
+        self.write_count = 0
+
+        os.makedirs(os.path.dirname(csv_filename) or ".", exist_ok=True)
+        self.csv_file = open(self.csv_filename, mode='a', newline='', encoding='utf-8')
+        self.csv_writer = csv.writer(self.csv_file)
+
+        if os.path.getsize(self.csv_filename) == 0:
+            headers = [
+                "session_id", "video_id", "ts_sec", "frame_idx",
+                "track_id", "person_id_raw", "hand_side",
+                "norm_x", "norm_y", "score",
+                "v_x", "v_y", "a_x", "a_y",
+                "is_in_box", "dist_to_box_center", "box_id"
+            ]
+            self.csv_writer.writerow(headers)
+
+    def _save_row(self, row):
+        self.csv_writer.writerow(row)
+        self.write_count += 1
+        if self.write_count % self.auto_flush_every == 0:
+            self.csv_file.flush()
+
+    def close(self):
+        try:
+            self.csv_file.flush()
+            self.csv_file.close()
+        except Exception:
+            pass
+
+    def extract_and_save(
+        self,
+        session_id,
+        video_id,
+        ts_sec,
+        frame_idx,
+        person_id_raw,
+        hand_assigner,
+        kpts,
+        scores,
+        boxes,
+    ):
+        if len(scores) <= 10:
+            return
+
+        # Build body-centric coordinates with neck as origin and shoulder width as scale.
+        if scores[5] < 0.2 or scores[6] < 0.2:
+            return
+
+        neck_x = (kpts[5][0] + kpts[6][0]) / 2.0
+        neck_y = (kpts[5][1] + kpts[6][1]) / 2.0
+        shoulder_width = max(math.hypot(kpts[5][0] - kpts[6][0], kpts[5][1] - kpts[6][1]), 10.0)
+
+        for hand_side, wrist_idx in [("left", 9), ("right", 10)]:
+            score = float(scores[wrist_idx])
+            if score < 0.15:
+                continue
+
+            wrist_x = float(kpts[wrist_idx][0])
+            wrist_y = float(kpts[wrist_idx][1])
+            norm_x = (wrist_x - neck_x) / shoulder_width
+            norm_y = (wrist_y - neck_y) / shoulder_width
+
+            track_id = hand_assigner.assign(hand_side, wrist_x, wrist_y, ts_sec)
+            hand_key = f"{session_id}_{track_id}_{hand_side}"
+
+            if hand_key not in self.history:
+                self.history[hand_key] = deque(maxlen=3)
+
+            history = self.history[hand_key]
+            history.append((norm_x, norm_y, ts_sec))
+
+            v_x, v_y, a_x, a_y = 0.0, 0.0, 0.0, 0.0
+            if len(history) >= 2:
+                x1, y1, t1 = history[-2]
+                x2, y2, t2 = history[-1]
+                dt = max(t2 - t1, 1e-3)
+                v_x = (x2 - x1) / dt
+                v_y = (y2 - y1) / dt
+
+            if len(history) >= 3:
+                x0, y0, t0 = history[-3]
+                x1, y1, t1 = history[-2]
+                x2, y2, t2 = history[-1]
+                dt1 = max(t1 - t0, 1e-3)
+                dt2 = max(t2 - t1, 1e-3)
+                v1_x = (x1 - x0) / dt1
+                v1_y = (y1 - y0) / dt1
+                v2_x = (x2 - x1) / dt2
+                v2_y = (y2 - y1) / dt2
+                a_dt = max(t2 - t0, 1e-3)
+                a_x = (v2_x - v1_x) / a_dt
+                a_y = (v2_y - v1_y) / a_dt
+
+            is_in_box = 0
+            target_box_id = -1
+            min_dist = float('inf')
+
+            for box in boxes:
+                contour = box['orig_contour']
+                moments = cv2.moments(contour)
+                if moments["m00"] != 0:
+                    cx = float(moments["m10"] / moments["m00"])
+                    cy = float(moments["m01"] / moments["m00"])
+                else:
+                    cx, cy = float(contour[0][0][0]), float(contour[0][0][1])
+
+                dist_to_center = math.hypot(wrist_x - cx, wrist_y - cy) / shoulder_width
+
+                if cv2.pointPolygonTest(contour, (wrist_x, wrist_y), False) >= 0:
+                    is_in_box = 1
+                    target_box_id = box['box_id']
+                    min_dist = dist_to_center
+                    break
+
+                if dist_to_center < min_dist:
+                    min_dist = dist_to_center
+                    target_box_id = box['box_id']
+
+            row = [
+                session_id,
+                video_id,
+                round(ts_sec, 4),
+                frame_idx,
+                track_id,
+                person_id_raw,
+                hand_side,
+                round(norm_x, 4),
+                round(norm_y, 4),
+                round(score, 4),
+                round(v_x, 4),
+                round(v_y, 4),
+                round(a_x, 4),
+                round(a_y, 4),
+                is_in_box,
+                round(min_dist, 4),
+                target_box_id,
+            ]
+            self._save_row(row)
 
 
 def transcode_video_to_480p(src_path: str, dst_path: str) -> Tuple[int, int]:
@@ -147,8 +345,10 @@ async def start_inference():
 @app.websocket("/ws/inference")
 async def websocket_inference(websocket: WebSocket):
     await websocket.accept()
+    feature_extractor = None
     
     if not os.path.exists(JSON_FILE):
+        print(f"⚠️ [警告] 无法启动推理：未找到配置文件 {JSON_FILE}，请先完成前端标注！")
         await websocket.close()
         return
         
@@ -172,6 +372,19 @@ async def websocket_inference(websocket: WebSocket):
     cached_bboxes = np.empty((0, 4), dtype=np.float32)
     cached_skeletons_data = []
     cached_collisions = []
+
+    session_id = str(uuid.uuid4())[:8]
+    video_src = APP_STATE.get("video_path", "")
+    if os.path.exists(video_src):
+        f_stat = os.stat(video_src)
+        unique_file_str = f"{f_stat.st_size}_{f_stat.st_mtime}"
+        video_id = hashlib.md5(unique_file_str.encode("utf-8")).hexdigest()[:10]
+    else:
+        video_id = "unknown"
+
+    csv_name = f"localdata/action_dataset_{session_id}.csv"
+    feature_extractor = ActionFeatureExtractorV2(csv_filename=csv_name)
+    hand_assigner = WristTrackAssigner(max_match_dist=150.0, stale_sec=1.0)
     
     try:
         while cap.isOpened() and APP_STATE["is_inferencing"]:
@@ -206,6 +419,18 @@ async def websocket_inference(websocket: WebSocket):
                         for k in range(kpts_all.shape[1]):
                             person_pts.append([float(kpts_all[p_idx][k][0]), float(kpts_all[p_idx][k][1]), float(scores_all[p_idx][k])])
                         skeletons_data.append({"person_id": p_idx, "keypoints": person_pts})
+
+                        feature_extractor.extract_and_save(
+                            session_id=session_id,
+                            video_id=video_id,
+                            ts_sec=(frame_count / video_fps),
+                            frame_idx=frame_count,
+                            person_id_raw=p_idx,
+                            hand_assigner=hand_assigner,
+                            kpts=kpts_all[p_idx],
+                            scores=scores_all[p_idx],
+                            boxes=boxes,
+                        )
 
                         for _, kpt_idx in [("左手", 9), ("右手", 10)]:
                             wrist = kpts_all[p_idx][kpt_idx]
@@ -261,6 +486,8 @@ async def websocket_inference(websocket: WebSocket):
     except WebSocketDisconnect:
         print("前端连接断开")
     finally:
+        if feature_extractor is not None:
+            feature_extractor.close()
         cap.release()
         
 if __name__ == "__main__":
