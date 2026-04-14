@@ -1,7 +1,7 @@
 {
     "paths": {
-        "templates_dir": "templates",
-        "index_html": "templates/index.html",
+        "templates_dir": "frontend",
+        "index_html": "frontend/index.html",
         "base_localdata_dir": "localdata",
         "upload_dir": "localdata/upload",
         "upload_480p_dir": "localdata/upload/480p",

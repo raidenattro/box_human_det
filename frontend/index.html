@@ -150,9 +150,9 @@ async function uploadAndStartAnnotating() {
     setUIStatus("⏳ 正在处理", "正在上传视频并提取第一帧，请稍候...", "#f39c12");
     
     let fd = new FormData(); fd.append("file", file);
-    await fetch('/upload_video', {method: 'POST', body: fd});
+    await fetch('/api/upload_video', {method: 'POST', body: fd});
     
-    let res = await fetch('/get_first_frame');
+    let res = await fetch('/api/get_first_frame');
     let data = await res.json();
     
     if(data.error) return alert("提取视频帧失败！");
@@ -322,12 +322,12 @@ async function saveAndStartInference() {
             });
         }
     }
-    await fetch('/save_annotation', {
+    await fetch('/api/save_annotation', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({shelf_corners: shelfPoints, grid_shape: [gridRows, gridCols], boxes: finalBoxes})
     });
     
-    await fetch('/start_inference', {method: 'POST'});
+    await fetch('/api/start_inference', {method: 'POST'});
     
     annCvs.style.display = "none";
     document.getElementById('views-container').style.display = "flex";
