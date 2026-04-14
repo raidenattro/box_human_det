@@ -144,6 +144,8 @@ let dragTarget = null, dragStartFlat = null, dragStartState = null;
 async function uploadAndStartAnnotating() {
     const file = document.getElementById('videoFile').files[0];
     if(!file) return alert("请先选择视频文件！");
+
+    resetAnnotationSession();
     
     setUIStatus("⏳ 正在处理", "正在上传视频并提取第一帧，请稍候...", "#f39c12");
     
@@ -157,6 +159,7 @@ async function uploadAndStartAnnotating() {
     
     bgImage.src = "data:image/jpeg;base64," + data.image;
     bgImage.onload = () => {
+        annCtx.clearRect(0, 0, annCvs.width, annCvs.height);
         annCvs.width = bgImage.width;
         annCvs.height = bgImage.height;
         annCvs.style.display = "inline-block";
@@ -339,6 +342,24 @@ async function saveAndStartInference() {
 // ========================================================
 const COCO_LINES = [[15,13],[13,11],[16,14],[14,12],[11,12],[5,11],[6,12],[5,6],[5,7],[6,8],[7,9],[8,10],[1,2],[0,1],[0,2],[1,3],[2,4],[3,5],[4,6]];
 let currentInferenceWs = null;
+
+function resetAnnotationSession() {
+    // 清空上一段视频遗留的标注状态，确保重新上传可从 4 点重新标注。
+    shelfPoints = [];
+    M_fwd = null;
+    M_inv = null;
+    layerYs = [];
+    layerColXs = [];
+    dragTarget = null;
+    dragStartFlat = null;
+    dragStartState = null;
+    finalBoxes = [];
+
+    if (currentInferenceWs) {
+        currentInferenceWs.close();
+        currentInferenceWs = null;
+    }
+}
 
 function startRenderEngine() {
     const ctxRaw = document.getElementById('cvsRaw').getContext('2d');
