@@ -27,8 +27,116 @@ from mmpose.structures import merge_data_samples
 from mmpose.utils import register_all_modules, adapt_mmdet_pipeline
 register_all_modules()
 
+
+CONFIG_FILE = "app_config.json"
+
+REQUIRED_CONFIG_KEYS = {
+    "paths": [
+        "templates_dir",
+        "index_html",
+        "base_localdata_dir",
+        "upload_dir",
+        "upload_480p_dir",
+        "json_dir",
+        "csv_dir",
+        "default_json_file",
+        "counter_file",
+    ],
+    "models": [
+        "device",
+        "det_config",
+        "det_checkpoint",
+        "pose_config",
+        "pose_checkpoint",
+    ],
+    "inference": ["det_interval", "pose_interval"],
+    "server": ["host", "port"],
+}
+
+
+def _normalize_local_path(path_value: str) -> str:
+    if path_value.startswith("http://") or path_value.startswith("https://"):
+        return path_value
+    return os.path.normpath(path_value)
+
+
+def _validate_config_or_raise(cfg: dict, config_file: str):
+    errors = []
+
+    for section, keys in REQUIRED_CONFIG_KEYS.items():
+        section_data = cfg.get(section)
+        if not isinstance(section_data, dict):
+            errors.append(f"缺少对象字段: {section}")
+            continue
+
+        for key in keys:
+            if key not in section_data:
+                errors.append(f"缺少字段: {section}.{key}")
+                continue
+
+            value = section_data[key]
+            if isinstance(value, str) and not value.strip():
+                errors.append(f"字段不能为空: {section}.{key}")
+
+    try:
+        det_interval = int(cfg["inference"]["det_interval"])
+        if det_interval <= 0:
+            errors.append("字段必须大于 0: inference.det_interval")
+    except Exception:
+        errors.append("字段必须是整数: inference.det_interval")
+
+    try:
+        pose_interval = int(cfg["inference"]["pose_interval"])
+        if pose_interval <= 0:
+            errors.append("字段必须大于 0: inference.pose_interval")
+    except Exception:
+        errors.append("字段必须是整数: inference.pose_interval")
+
+    try:
+        port = int(cfg["server"]["port"])
+        if not (1 <= port <= 65535):
+            errors.append("字段范围无效(1-65535): server.port")
+    except Exception:
+        errors.append("字段必须是整数: server.port")
+
+    if errors:
+        msg = [f"配置文件校验失败: {config_file}"]
+        msg.extend([f"- {e}" for e in errors])
+        raise SystemExit("\n".join(msg))
+
+
+def load_app_config(config_file: str = CONFIG_FILE) -> dict:
+    if not os.path.exists(config_file):
+        raise SystemExit(f"配置文件不存在: {config_file}，请先创建后再启动。")
+
+    try:
+        with open(config_file, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"配置文件 JSON 格式错误: {config_file}，详情: {e}")
+    except Exception as e:
+        raise SystemExit(f"读取配置文件失败: {config_file}，详情: {e}")
+
+    if not isinstance(loaded, dict):
+        raise SystemExit(f"配置文件根节点必须是对象: {config_file}")
+
+    _validate_config_or_raise(loaded, config_file)
+
+    for k, v in loaded.get("paths", {}).items():
+        if isinstance(v, str):
+            loaded["paths"][k] = _normalize_local_path(v)
+
+    for k, v in loaded.get("models", {}).items():
+        if isinstance(v, str):
+            loaded["models"][k] = _normalize_local_path(v)
+
+    return loaded
+
+
+APP_CONFIG = load_app_config()
+
 app = FastAPI()
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory=APP_CONFIG["paths"]["templates_dir"])
 
 
 @dataclass
@@ -311,13 +419,13 @@ APP_STATE = {
     "video_path": "",
     "is_inferencing": False
 }
-BASE_LOCALDATA_DIR = "localdata"
-UPLOAD_DIR = os.path.join(BASE_LOCALDATA_DIR, "upload")
-UPLOAD_480P_DIR = os.path.join(UPLOAD_DIR, "480p")
-JSON_DIR = os.path.join(BASE_LOCALDATA_DIR, "json")
-CSV_DIR = os.path.join(BASE_LOCALDATA_DIR, "csv")
-JSON_FILE = os.path.join(JSON_DIR, "precise_boxes_new.json")
-COUNTER_FILE = os.path.join(BASE_LOCALDATA_DIR, "upload_counter.txt")
+BASE_LOCALDATA_DIR = APP_CONFIG["paths"]["base_localdata_dir"]
+UPLOAD_DIR = APP_CONFIG["paths"]["upload_dir"]
+UPLOAD_480P_DIR = APP_CONFIG["paths"]["upload_480p_dir"]
+JSON_DIR = APP_CONFIG["paths"]["json_dir"]
+CSV_DIR = APP_CONFIG["paths"]["csv_dir"]
+JSON_FILE = APP_CONFIG["paths"]["default_json_file"]
+COUNTER_FILE = APP_CONFIG["paths"]["counter_file"]
 
 
 def reserve_next_upload_id() -> int:
@@ -345,7 +453,7 @@ pose_model = None
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     # 直接读取并返回 HTML，不再依赖 request 传参
-    with open("templates/index.html", "r", encoding="utf-8") as f:
+    with open(APP_CONFIG["paths"]["index_html"], "r", encoding="utf-8") as f:
         html_content = f.read()
     return HTMLResponse(content=html_content)
 
@@ -411,12 +519,12 @@ async def start_inference():
     global det_model, pose_model
     if det_model is None:
         print("🚀 正在加载 AI 模型...")
-        device = 'cuda:0' # ⚠️ 请确保这里符合你的服务器配置
-        det_model = init_detector('/home/zyqiao/workspace/mmpose/demo/mmdetection_cfg/rtmdet_m_640-8xb32_coco-person.py',
-                                  'https://download.openmmlab.com/mmpose/v1/projects/rtmpose/rtmdet_m_8xb32-100e_coco-obj365-person-235e8209.pth', device=device)
+        device = APP_CONFIG["models"]["device"]
+        det_model = init_detector(APP_CONFIG["models"]["det_config"],
+                                  APP_CONFIG["models"]["det_checkpoint"], device=device)
         det_model.cfg = adapt_mmdet_pipeline(det_model.cfg)
-        pose_model = init_pose_model('/home/zyqiao/workspace/mmpose/configs/body_2d_keypoint/rtmpose/body8/rtmpose-m_8xb256-420e_body8-256x192.py',
-                                     'https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.pth', device=device,
+        pose_model = init_pose_model(APP_CONFIG["models"]["pose_config"],
+                                     APP_CONFIG["models"]["pose_checkpoint"], device=device,
                                      cfg_options=dict(model=dict(test_cfg=dict(output_heatmaps=False))))
     
     APP_STATE["is_inferencing"] = True
@@ -453,8 +561,8 @@ async def websocket_inference(websocket: WebSocket):
     frame_count = 0
 
     # 轻量时序优化：检测每 3 帧执行一次，姿态每 2 帧执行一次。
-    det_interval = 3
-    pose_interval = 2
+    det_interval = int(APP_CONFIG["inference"].get("det_interval", 3))
+    pose_interval = int(APP_CONFIG["inference"].get("pose_interval", 2))
     cached_bboxes = np.empty((0, 4), dtype=np.float32)
     cached_skeletons_data = []
     cached_collisions = []
@@ -599,4 +707,8 @@ async def websocket_inference(websocket: WebSocket):
         cap.release()
         
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8045)
+    uvicorn.run(
+        app,
+        host=APP_CONFIG["server"].get("host", "0.0.0.0"),
+        port=int(APP_CONFIG["server"].get("port", 8045)),
+    )
