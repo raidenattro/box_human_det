@@ -4,6 +4,9 @@
 都下沉到 services 层，避免入口文件继续膨胀。
 """
 
+import json
+import os
+
 from fastapi import APIRouter, FastAPI, File, UploadFile, WebSocket
 from fastapi.responses import FileResponse
 
@@ -74,6 +77,27 @@ def create_app():
     async def start_inference():
         """按需加载模型，并将会话切换到推理状态。"""
         return await inference_service.start_inference()
+
+    @api_router.get("/get_current_annotation")
+    async def get_current_annotation():
+        """返回当前会话将使用的标注 JSON，供前端启动前刷新显示。"""
+        json_file_path = STATE.json_path or app_config["paths"]["default_json_file"]
+        if not os.path.exists(json_file_path):
+            return {"status": "error", "message": "annotation json not found", "json_path": json_file_path}
+
+        try:
+            with open(json_file_path, "r", encoding="utf-8") as f:
+                config_data = json.load(f)
+        except Exception as e:
+            return {"status": "error", "message": f"failed to read annotation json: {e}", "json_path": json_file_path}
+
+        boxes = config_data.get("boxes", []) if isinstance(config_data, dict) else []
+        return {
+            "status": "success",
+            "json_path": json_file_path,
+            "boxes": boxes,
+            "grid_shape": config_data.get("grid_shape", []) if isinstance(config_data, dict) else [],
+        }
 
     @api_router.get("/callback_report/{event_id}")
     async def get_callback_report(event_id: str):

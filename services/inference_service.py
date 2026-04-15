@@ -125,7 +125,7 @@ class InferenceService:
 
         with open(json_file_path, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
-        boxes = config_data['boxes']
+        boxes = config_data.get('boxes', [])
         for box in boxes:
             box['orig_contour'] = np.int32(box['video_polygon']).reshape((-1, 1, 2))
 
@@ -134,15 +134,28 @@ class InferenceService:
         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+        if orig_w <= 0 or orig_h <= 0:
+            print("⚠️ [警告] 无法读取当前视频分辨率，停止本次推理")
+            self.state.is_inferencing = False
+            await websocket.close()
+            if cap is not None:
+                cap.release()
+            return
+
         start_time = time.time()
         frame_count = 0
 
         det_interval = int(self.app_config["inference"].get("det_interval", 3))
         pose_interval = int(self.app_config["inference"].get("pose_interval", 2))
+        alarm_min_consecutive_frames = int(self.app_config["inference"].get("alarm_min_consecutive_frames", 3))
+        alarm_cooldown_frames = int(self.app_config["inference"].get("alarm_cooldown_frames", 12))
         cached_bboxes = np.empty((0, 4), dtype=np.float32)
         cached_skeletons_data = []
         cached_collisions = []
+        cached_alarm_collisions = []
         cached_report_event_ids = []
+        box_consecutive_hits = {}
+        box_last_alarm_frame = {}
 
         person_assigner = PersonTrackAssigner(max_match_dist=220.0, stale_sec=1.2)
 
@@ -166,6 +179,7 @@ class InferenceService:
 
                 if run_pose:
                     active_collisions = []
+                    alarm_collisions = []
                     skeletons_data = []
                     report_event_ids = []
 
@@ -210,11 +224,37 @@ class InferenceService:
                     cached_skeletons_data = skeletons_data
                     cached_collisions = list(set(active_collisions))
 
+                    # 仅对“报警触发”执行帧数门槛：连续命中 N 次且满足冷却帧后才触发。
+                    current_collision_box_ids = set()
+                    for collision in cached_collisions:
+                        if not collision.startswith("Box_"):
+                            continue
+                        try:
+                            current_collision_box_ids.add(int(collision.split("_", 1)[1]))
+                        except Exception:
+                            continue
+
+                    for box_id in list(box_consecutive_hits.keys()):
+                        if box_id not in current_collision_box_ids:
+                            box_consecutive_hits[box_id] = 0
+
+                    for box_id in current_collision_box_ids:
+                        box_consecutive_hits[box_id] = box_consecutive_hits.get(box_id, 0) + 1
+                        last_alarm_frame = box_last_alarm_frame.get(box_id, -10**9)
+                        if (
+                            box_consecutive_hits[box_id] >= alarm_min_consecutive_frames
+                            and frame_count - last_alarm_frame >= alarm_cooldown_frames
+                        ):
+                            alarm_collisions.append(f"Box_{box_id}")
+                            box_last_alarm_frame[box_id] = frame_count
+
+                    cached_alarm_collisions = alarm_collisions
+
                     # 将碰撞事件异步入队给回调上报服务，避免阻塞推理主循环。
-                    if self.callback_reporter is not None and cached_collisions:
+                    if self.callback_reporter is not None and cached_alarm_collisions:
                         upload_tag = self.state.upload_tag or f"u{int(self.state.upload_id or 0):06d}"
                         video_time_sec = frame_count / video_fps
-                        for collision in cached_collisions:
+                        for collision in cached_alarm_collisions:
                             if not collision.startswith("Box_"):
                                 continue
                             try:
@@ -234,6 +274,7 @@ class InferenceService:
                 else:
                     skeletons_data = cached_skeletons_data
                     active_collisions = cached_collisions
+                    alarm_collisions = cached_alarm_collisions
                     report_event_ids = cached_report_event_ids
 
                 target_w = min(640, orig_w)
@@ -259,6 +300,7 @@ class InferenceService:
                     "orig_width": orig_w,
                     "skeletons": skeletons_data,
                     "collisions": active_collisions,
+                    "alarm_collisions": alarm_collisions,
                     "callback_event_ids": report_event_ids,
                     "stats": {
                         "fps": round(current_fps, 1),

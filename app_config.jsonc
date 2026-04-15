@@ -1,0 +1,139 @@
+{
+    // =============================
+    // 路径配置
+    // =============================
+    "paths": {
+        // 前端资源目录（当前主要用于页面入口文件定位）
+        "templates_dir": "frontend",
+
+        // 后端 GET / 返回的前端入口 HTML 路径
+        "index_html": "frontend/index.html",
+
+        // 本地业务数据根目录
+        "base_localdata_dir": "localdata",
+
+        // 原始上传视频存放目录
+        "upload_dir": "localdata/upload",
+
+        // 480p 转码视频存放目录
+        "upload_480p_dir": "localdata/upload/480p",
+
+        // 标注 JSON 存放目录（含上传会话标注）
+        "json_dir": "localdata/json",
+
+        // 预留 CSV 目录（当前主流程可不使用）
+        "csv_dir": "localdata/csv",
+
+        // 默认标注 JSON 路径（未分配会话 json_path 时使用）
+        "default_json_file": "localdata/json/precise_boxes_new.json",
+
+        // 上传计数器文件，用于生成 upload_tag（如 u000123）
+        "counter_file": "localdata/upload_counter.txt"
+    },
+
+    // =============================
+    // 模型配置
+    // =============================
+    "models": {
+        // 推理设备：cuda:0 / cpu
+        "device": "cuda:0",
+
+        // MMDetection 配置文件路径（人检测）
+        "det_config": "D:/work/workspace/git-repo/mmpose/demo/mmdetection_cfg/rtmdet_m_640-8xb32_coco-person.py",
+
+        // MMDetection 检测模型权重
+        "det_checkpoint": "https://download.openmmlab.com/mmpose/v1/projects/rtmpose/rtmdet_m_8xb32-100e_coco-obj365-person-235e8209.pth",
+
+        // MMPose 配置文件路径（人体关键点）
+        "pose_config": "D:/work/workspace/git-repo/mmpose/configs/body_2d_keypoint/rtmpose/body8/rtmpose-m_8xb256-420e_body8-256x192.py",
+
+        // MMPose 模型权重
+        "pose_checkpoint": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.pth"
+    },
+
+    // =============================
+    // 推理流程参数
+    // =============================
+    "inference": {
+        // 检测执行间隔（每 N 帧执行一次检测）
+        "det_interval": 3,
+
+        // 姿态执行间隔（每 N 帧执行一次姿态）
+        "pose_interval": 2,
+
+        // 报警触发最小连续命中帧数（降低误报）
+        "alarm_min_consecutive_frames": 3,
+
+        // 同一货框报警触发后的冷却帧数（避免频繁报警）
+        "alarm_cooldown_frames": 12
+    },
+
+    // =============================
+    // 碰撞回调上报（Java）
+    // =============================
+    "reporting": {
+        // 是否启用回调上报
+        "enabled": true,
+
+        // Java 回调地址
+        "callback_url": "http://127.0.0.1:8080/api/pick/finish",
+
+        // 单次请求超时（毫秒）
+        "request_timeout_ms": 800,
+
+        // 上报队列最大长度（满了后事件会被丢弃）
+        "queue_size": 1000,
+
+        // 同一 uploadTag+boxId 的上报冷却时间（毫秒）
+        "cooldown_ms": 500,
+
+        // 失败后最大重试次数
+        "retry_times": 2,
+
+        // 重试退避基数（毫秒），实际会指数退避
+        "retry_backoff_ms": 100,
+
+        // 内存中保留的上报记录上限（用于查询接口）
+        "max_records": 5000,
+
+        // 回调请求体模板（支持占位符替换）
+        "payload_template": {
+            // 事件唯一 ID
+            "eventId": "{event_id}",
+
+            // 事件类型（当前为 ALGO_PICK_FINISHED）
+            "eventType": "{event_type}",
+
+            // 上传会话标记
+            "uploadTag": "{upload_tag}",
+
+            // 触发货框 ID
+            "boxId": "{box_id}",
+
+            // 触发时帧号
+            "frameIdx": "{frame_idx}",
+
+            // 触发时视频秒数
+            "videoTimeSec": "{video_time_sec}",
+
+            // 触发时间戳（毫秒）
+            "detectedAtMs": "{detected_at_ms}"
+        },
+
+        // 固定附加字段（每次回调都追加）
+        "static_fields": {
+            "source": "box_human_det"
+        }
+    },
+
+    // =============================
+    // 服务启动配置
+    // =============================
+    "server": {
+        // 服务监听地址
+        "host": "0.0.0.0",
+
+        // 服务端口
+        "port": 8045
+    }
+}
