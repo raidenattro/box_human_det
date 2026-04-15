@@ -62,10 +62,10 @@
         "pose_interval": 2,
 
         // 报警触发最小连续命中帧数（降低误报）
-        "alarm_min_consecutive_frames": 3,
+        "alarm_min_consecutive_frames": 2,
 
         // 同一货框报警触发后的冷却帧数（避免频繁报警）
-        "alarm_cooldown_frames": 12
+        "alarm_cooldown_frames": 5
     },
 
     // =============================
