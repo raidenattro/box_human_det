@@ -10,8 +10,9 @@ from fastapi.responses import FileResponse
 from core.config import load_app_config
 from core.state import STATE
 from services.annotation_service import save_annotation
+from services.callback_reporter import CollisionCallbackReporter
 from services.inference_service import InferenceService
-from services.video_service import get_first_frame_b64, handle_video_upload
+from services.video_service import get_first_frame_b64, handle_stream_source, handle_video_upload
 
 
 def create_app():
@@ -21,9 +22,18 @@ def create_app():
         tuple: (app, app_config)，启动入口可以直接复用已加载的配置。
     """
     app_config = load_app_config()
-    inference_service = InferenceService(app_config, STATE)
+    callback_reporter = CollisionCallbackReporter(app_config.get("reporting", {}))
+    inference_service = InferenceService(app_config, STATE, callback_reporter=callback_reporter)
     app = FastAPI()
     api_router = APIRouter(prefix="/api")
+
+    @app.on_event("startup")
+    async def startup_event():
+        await callback_reporter.start()
+
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        await callback_reporter.stop()
 
     @app.get("/")
     async def read_root():
@@ -42,6 +52,14 @@ def create_app():
             base_localdata_dir=app_config["paths"]["base_localdata_dir"],
         )
 
+    @api_router.post("/stream_source")
+    async def stream_source_api(data: dict):
+        """设置视频流来源（RTSP/HTTP），用于替代本地文件上传模式。"""
+        return handle_stream_source(
+            stream_url=str(data.get("stream_url", "")),
+            json_dir=app_config["paths"]["json_dir"],
+        )
+
     @api_router.get("/get_first_frame")
     async def get_first_frame():
         """返回当前视频的第一帧，编码为 base64 JPEG。"""
@@ -56,6 +74,14 @@ def create_app():
     async def start_inference():
         """按需加载模型，并将会话切换到推理状态。"""
         return await inference_service.start_inference()
+
+    @api_router.get("/callback_report/{event_id}")
+    async def get_callback_report(event_id: str):
+        """查询算法拣货完成回调上报状态及 Java 响应。"""
+        rec = callback_reporter.get_record(event_id)
+        if rec is None:
+            return {"status": "not_found", "event_id": event_id}
+        return {"status": "ok", "record": rec}
 
     @app.websocket("/ws/inference")
     async def websocket_inference(websocket: WebSocket):

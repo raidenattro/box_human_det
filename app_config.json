@@ -21,6 +21,28 @@
         "det_interval": 3,
         "pose_interval": 2
     },
+    "reporting": {
+        "enabled": true,
+        "callback_url": "http://127.0.0.1:8080/api/pick/finish",
+        "request_timeout_ms": 800,
+        "queue_size": 1000,
+        "cooldown_ms": 500,
+        "retry_times": 2,
+        "retry_backoff_ms": 100,
+        "max_records": 5000,
+        "payload_template": {
+            "eventId": "{event_id}",
+            "eventType": "{event_type}",
+            "uploadTag": "{upload_tag}",
+            "boxId": "{box_id}",
+            "frameIdx": "{frame_idx}",
+            "videoTimeSec": "{video_time_sec}",
+            "detectedAtMs": "{detected_at_ms}"
+        },
+        "static_fields": {
+            "source": "box_human_det"
+        }
+    },
     "server": {
         "host": "0.0.0.0",
         "port": 8045

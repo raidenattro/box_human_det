@@ -12,6 +12,8 @@ from typing import Any
 class AppState:
     """当前视频会话的可变状态。"""
     video_path: str = ""
+    source_type: str = "file"
+    source_url: str = ""
     is_inferencing: bool = False
     upload_id: int = 0
     upload_tag: str = ""

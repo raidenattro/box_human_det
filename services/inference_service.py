@@ -77,10 +77,11 @@ class PersonTrackAssigner:
 class InferenceService:
     """管理模型生命周期和单视频的推理流。"""
 
-    def __init__(self, app_config: dict, state):
+    def __init__(self, app_config: dict, state, callback_reporter=None):
         """保存已解析配置和共享运行态。"""
         self.app_config = app_config
         self.state = state
+        self.callback_reporter = callback_reporter
         self.det_model = None
         self.pose_model = None
 
@@ -141,6 +142,7 @@ class InferenceService:
         cached_bboxes = np.empty((0, 4), dtype=np.float32)
         cached_skeletons_data = []
         cached_collisions = []
+        cached_report_event_ids = []
 
         person_assigner = PersonTrackAssigner(max_match_dist=220.0, stale_sec=1.2)
 
@@ -165,6 +167,7 @@ class InferenceService:
                 if run_pose:
                     active_collisions = []
                     skeletons_data = []
+                    report_event_ids = []
 
                     if len(cached_bboxes) > 0:
                         pose_results = inference_topdown(self.pose_model, raw_frame, cached_bboxes, bbox_format='xyxy')
@@ -206,9 +209,32 @@ class InferenceService:
 
                     cached_skeletons_data = skeletons_data
                     cached_collisions = list(set(active_collisions))
+
+                    # 将碰撞事件异步入队给回调上报服务，避免阻塞推理主循环。
+                    if self.callback_reporter is not None and cached_collisions:
+                        upload_tag = self.state.upload_tag or f"u{int(self.state.upload_id or 0):06d}"
+                        video_time_sec = frame_count / video_fps
+                        for collision in cached_collisions:
+                            if not collision.startswith("Box_"):
+                                continue
+                            try:
+                                box_id = int(collision.split("_", 1)[1])
+                            except Exception:
+                                continue
+                            event_id = self.callback_reporter.enqueue_pick_finished(
+                                box_id=box_id,
+                                frame_idx=frame_count,
+                                video_time_sec=video_time_sec,
+                                upload_tag=upload_tag,
+                            )
+                            if event_id is not None:
+                                report_event_ids.append(event_id)
+
+                    cached_report_event_ids = report_event_ids
                 else:
                     skeletons_data = cached_skeletons_data
                     active_collisions = cached_collisions
+                    report_event_ids = cached_report_event_ids
 
                 target_w = min(640, orig_w)
                 if target_w < orig_w:
@@ -233,6 +259,7 @@ class InferenceService:
                     "orig_width": orig_w,
                     "skeletons": skeletons_data,
                     "collisions": active_collisions,
+                    "callback_event_ids": report_event_ids,
                     "stats": {
                         "fps": round(current_fps, 1),
                         "video_time": formatted_time,

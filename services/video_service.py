@@ -7,6 +7,7 @@
 import base64
 import os
 import shutil
+import time
 from typing import Tuple
 
 import cv2
@@ -97,13 +98,19 @@ async def handle_video_upload(file: UploadFile, upload_dir: str, upload_480p_dir
     STATE.upload_id = upload_id
     STATE.upload_tag = upload_tag
     STATE.json_path = upload_json_path
+    STATE.source_type = "file"
+    STATE.source_url = ""
 
     return {"status": "success", "upload_id": upload_id, "upload_tag": upload_tag}
 
 
 def get_first_frame_b64(video_path: str):
     """读取视频第一帧，并返回 base64 编码的 JPEG 数据。"""
-    if not video_path or not os.path.exists(video_path):
+    if not video_path:
+        return {"error": "No video"}
+
+    is_url = video_path.startswith("rtsp://") or video_path.startswith("http://") or video_path.startswith("https://")
+    if not is_url and not os.path.exists(video_path):
         return {"error": "No video"}
 
     cap = cv2.VideoCapture(video_path)
@@ -113,3 +120,30 @@ def get_first_frame_b64(video_path: str):
         _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
         return {"image": base64.b64encode(buffer).decode('utf-8')}
     return {"error": "Read failed"}
+
+
+def handle_stream_source(stream_url: str, json_dir: str):
+    """设置实时视频流来源（如 RTSP），并复用当前会话标注文件管理方式。"""
+    stream_url = (stream_url or "").strip()
+    if not stream_url:
+        return {"status": "error", "message": "stream_url is empty"}
+
+    os.makedirs(json_dir, exist_ok=True)
+    ts_tag = int(time.time())
+    upload_tag = f"stream_{ts_tag}"
+    upload_json_path = os.path.join(json_dir, f"{upload_tag}_boxes.json")
+
+    STATE.video_path = stream_url
+    STATE.is_inferencing = False
+    STATE.upload_id = 0
+    STATE.upload_tag = upload_tag
+    STATE.json_path = upload_json_path
+    STATE.source_type = "stream"
+    STATE.source_url = stream_url
+
+    return {
+        "status": "success",
+        "source_type": "stream",
+        "stream_url": stream_url,
+        "upload_tag": upload_tag,
+    }
