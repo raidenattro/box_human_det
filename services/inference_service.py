@@ -26,6 +26,40 @@ from mmpose.utils import register_all_modules, adapt_mmdet_pipeline
 register_all_modules()
 
 
+def _scale_polygon_points(points, sx: float, sy: float):
+    """按比例缩放多边形点。"""
+    out = []
+    for pt in points:
+        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+            out.append([float(pt[0]) * sx, float(pt[1]) * sy])
+    return out
+
+
+def _build_scaled_boxes(raw_boxes, ann_w: float | None, ann_h: float | None, target_w: int, target_h: int):
+    """将标注框映射到当前推理帧坐标系，优先使用归一化点位。"""
+    scaled = []
+    for box in raw_boxes:
+        pts = box.get("video_polygon", [])
+        norm_pts = box.get("video_polygon_norm", [])
+
+        if isinstance(norm_pts, list) and len(norm_pts) >= 3:
+            mapped_pts = _scale_polygon_points(norm_pts, float(target_w), float(target_h))
+        elif ann_w and ann_h and ann_w > 0 and ann_h > 0:
+            mapped_pts = _scale_polygon_points(pts, float(target_w) / float(ann_w), float(target_h) / float(ann_h))
+        else:
+            mapped_pts = _scale_polygon_points(pts, 1.0, 1.0)
+
+        if len(mapped_pts) < 3:
+            continue
+
+        new_box = dict(box)
+        new_box["video_polygon"] = mapped_pts
+        new_box["orig_contour"] = np.int32(mapped_pts).reshape((-1, 1, 2))
+        scaled.append(new_box)
+
+    return scaled
+
+
 @dataclass
 class TrackState:
     """最近邻跟踪器使用的单次轨迹快照。"""
@@ -125,22 +159,68 @@ class InferenceService:
 
         with open(json_file_path, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
-        boxes = config_data.get('boxes', [])
-        for box in boxes:
-            box['orig_contour'] = np.int32(box['video_polygon']).reshape((-1, 1, 2))
+        raw_boxes = config_data.get('boxes', [])
+        if not isinstance(raw_boxes, list):
+            raw_boxes = []
+
+        annotation_size = config_data.get('annotation_size', {}) if isinstance(config_data, dict) else {}
+        if not isinstance(annotation_size, dict):
+            annotation_size = {}
+
+        ann_w = annotation_size.get('width')
+        ann_h = annotation_size.get('height')
+        try:
+            ann_w = float(ann_w) if ann_w is not None else None
+            ann_h = float(ann_h) if ann_h is not None else None
+        except Exception:
+            ann_w, ann_h = None, None
+
+        source_info = config_data.get('source_info', {}) if isinstance(config_data, dict) else {}
+        if not isinstance(source_info, dict):
+            source_info = {}
+
+        if self.state.source_type == "stream":
+            marked_camera_url = str(source_info.get("camera_url", "") or "").strip()
+            if marked_camera_url and marked_camera_url != (self.state.source_url or ""):
+                print(
+                    "⚠️ [警告] 当前流地址与标注来源摄像头不一致: "
+                    f"stream={self.state.source_url} annotation_camera={marked_camera_url}"
+                )
 
         cap = cv2.VideoCapture(self.state.video_path)
         video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        stream_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        stream_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        if orig_w <= 0 or orig_h <= 0:
+        if stream_w <= 0 or stream_h <= 0:
             print("⚠️ [警告] 无法读取当前视频分辨率，停止本次推理")
             self.state.is_inferencing = False
             await websocket.close()
             if cap is not None:
                 cap.release()
             return
+
+        infer_cfg = self.app_config.get("inference", {})
+        target_stream_h = int(infer_cfg.get("stream_target_height", 480) or 480)
+        target_stream_h = max(120, target_stream_h)
+
+        if self.state.source_type == "stream" and stream_h > target_stream_h:
+            infer_h = target_stream_h
+            infer_w = int(round(stream_w * (infer_h / float(stream_h))))
+            infer_w = max(2, infer_w - (infer_w % 2))
+            infer_h = max(2, infer_h - (infer_h % 2))
+            stream_resize_needed = True
+        else:
+            infer_w = stream_w
+            infer_h = stream_h
+            stream_resize_needed = False
+
+        boxes = _build_scaled_boxes(raw_boxes, ann_w, ann_h, infer_w, infer_h)
+
+        print(
+            f"ℹ️ 推理分辨率: source={stream_w}x{stream_h} infer={infer_w}x{infer_h} "
+            f"stream_resize={'on' if stream_resize_needed else 'off'}"
+        )
 
         start_time = time.time()
         frame_count = 0
@@ -168,7 +248,10 @@ class InferenceService:
                     break
 
                 frame_count += 1
-                raw_frame = frame
+                if stream_resize_needed:
+                    raw_frame = cv2.resize(frame, (infer_w, infer_h), interpolation=cv2.INTER_AREA)
+                else:
+                    raw_frame = frame
                 run_det = ((frame_count - 1) % det_interval == 0)
                 run_pose = ((frame_count - 1) % pose_interval == 0)
 
@@ -277,12 +360,12 @@ class InferenceService:
                     alarm_collisions = cached_alarm_collisions
                     report_event_ids = cached_report_event_ids
 
-                target_w = min(640, orig_w)
-                if target_w < orig_w:
-                    target_h = int(orig_h * (target_w / orig_w))
-                    frame_for_encode = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                target_w = min(640, infer_w)
+                if target_w < infer_w:
+                    target_h = int(infer_h * (target_w / infer_w))
+                    frame_for_encode = cv2.resize(raw_frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
                 else:
-                    frame_for_encode = frame
+                    frame_for_encode = raw_frame
 
                 _, buffer = cv2.imencode('.jpg', frame_for_encode, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
                 b64_str = base64.b64encode(buffer).decode('utf-8')
@@ -297,11 +380,12 @@ class InferenceService:
 
                 payload = {
                     "image": b64_str,
-                    "orig_width": orig_w,
+                    "orig_width": infer_w,
                     "skeletons": skeletons_data,
                     "collisions": active_collisions,
                     "alarm_collisions": alarm_collisions,
                     "callback_event_ids": report_event_ids,
+                    "annotation_source": source_info,
                     "stats": {
                         "fps": round(current_fps, 1),
                         "video_time": formatted_time,

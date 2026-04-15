@@ -15,7 +15,7 @@ from core.state import STATE
 from services.annotation_service import save_annotation
 from services.callback_reporter import CollisionCallbackReporter
 from services.inference_service import InferenceService
-from services.video_service import get_first_frame_b64, handle_stream_source, handle_video_upload
+from services.video_service import get_first_frame_b64, handle_video_upload, initialize_source_from_config
 
 
 def create_app():
@@ -25,6 +25,11 @@ def create_app():
         tuple: (app, app_config)，启动入口可以直接复用已加载的配置。
     """
     app_config = load_app_config()
+    initialize_source_from_config(
+        app_config=app_config,
+        json_dir=app_config["paths"]["json_dir"],
+        default_json_file=app_config["paths"]["default_json_file"],
+    )
     callback_reporter = CollisionCallbackReporter(app_config.get("reporting", {}))
     inference_service = InferenceService(app_config, STATE, callback_reporter=callback_reporter)
     app = FastAPI()
@@ -53,14 +58,6 @@ def create_app():
             json_dir=app_config["paths"]["json_dir"],
             counter_file=app_config["paths"]["counter_file"],
             base_localdata_dir=app_config["paths"]["base_localdata_dir"],
-        )
-
-    @api_router.post("/stream_source")
-    async def stream_source_api(data: dict):
-        """设置视频流来源（RTSP/HTTP），用于替代本地文件上传模式。"""
-        return handle_stream_source(
-            stream_url=str(data.get("stream_url", "")),
-            json_dir=app_config["paths"]["json_dir"],
         )
 
     @api_router.get("/get_first_frame")
@@ -92,11 +89,15 @@ def create_app():
             return {"status": "error", "message": f"failed to read annotation json: {e}", "json_path": json_file_path}
 
         boxes = config_data.get("boxes", []) if isinstance(config_data, dict) else []
+        source_info = config_data.get("source_info", {}) if isinstance(config_data, dict) else {}
+        if not isinstance(source_info, dict):
+            source_info = {}
         return {
             "status": "success",
             "json_path": json_file_path,
             "boxes": boxes,
             "grid_shape": config_data.get("grid_shape", []) if isinstance(config_data, dict) else [],
+            "source_info": source_info,
         }
 
     @api_router.get("/callback_report/{event_id}")

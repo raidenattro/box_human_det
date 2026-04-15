@@ -61,11 +61,32 @@
         // 姿态执行间隔（每 N 帧执行一次姿态）
         "pose_interval": 2,
 
+        // 网络流推理目标高度（仅对 stream 生效，等比缩放）
+        "stream_target_height": 480,
+
         // 报警触发最小连续命中帧数（降低误报）
         "alarm_min_consecutive_frames": 2,
 
         // 同一货框报警触发后的冷却帧数（避免频繁报警）
         "alarm_cooldown_frames": 5
+    },
+
+    // =============================
+    // 视频来源初始化（启动时生效）
+    // =============================
+    "source": {
+        // true: 启动时按 stream_url 初始化网络流；false: 维持文件上传模式
+        "enabled": false,
+
+        // 网络视频流地址（RTSP/HTTP）
+        "stream_url": "",
+
+        // 作为回调/日志区分的会话标签
+        "upload_tag": "stream_config",
+
+        // 关联标注 JSON（可填绝对路径或相对 json_dir 的文件名）
+        // 为空时回退 default_json_file
+        "annotation_json": ""
     },
 
     // =============================

@@ -20,8 +20,15 @@
     "inference": {
         "det_interval": 3,
         "pose_interval": 2,
+        "stream_target_height": 480,
         "alarm_min_consecutive_frames": 3,
         "alarm_cooldown_frames": 12
+    },
+    "source": {
+        "enabled": false,
+        "stream_url": "",
+        "upload_tag": "stream_config",
+        "annotation_json": ""
     },
     "reporting": {
         "enabled": true,

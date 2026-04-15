@@ -7,7 +7,6 @@
 import base64
 import os
 import shutil
-import time
 from typing import Tuple
 
 import cv2
@@ -122,16 +121,29 @@ def get_first_frame_b64(video_path: str):
     return {"error": "Read failed"}
 
 
-def handle_stream_source(stream_url: str, json_dir: str):
-    """设置实时视频流来源（如 RTSP），并复用当前会话标注文件管理方式。"""
-    stream_url = (stream_url or "").strip()
-    if not stream_url:
-        return {"status": "error", "message": "stream_url is empty"}
+def initialize_source_from_config(app_config: dict, json_dir: str, default_json_file: str):
+    """从配置文件初始化默认视频来源，避免运行时再通过接口切换流地址。"""
+    source_cfg = app_config.get("source", {})
+    if not isinstance(source_cfg, dict):
+        source_cfg = {}
+
+    stream_enabled = bool(source_cfg.get("enabled", False))
+    stream_url = str(source_cfg.get("stream_url", "")).strip()
+
+    if not stream_enabled or not stream_url:
+        return
 
     os.makedirs(json_dir, exist_ok=True)
-    ts_tag = int(time.time())
-    upload_tag = f"stream_{ts_tag}"
-    upload_json_path = os.path.join(json_dir, f"{upload_tag}_boxes.json")
+
+    upload_tag = str(source_cfg.get("upload_tag", "stream_config")).strip() or "stream_config"
+    annotation_json = str(source_cfg.get("annotation_json", "")).strip()
+    if annotation_json:
+        if os.path.isabs(annotation_json):
+            upload_json_path = annotation_json
+        else:
+            upload_json_path = os.path.join(json_dir, annotation_json)
+    else:
+        upload_json_path = default_json_file
 
     STATE.video_path = stream_url
     STATE.is_inferencing = False
@@ -141,9 +153,7 @@ def handle_stream_source(stream_url: str, json_dir: str):
     STATE.source_type = "stream"
     STATE.source_url = stream_url
 
-    return {
-        "status": "success",
-        "source_type": "stream",
-        "stream_url": stream_url,
-        "upload_tag": upload_tag,
-    }
+    print(
+        f"✅ 已从配置文件初始化网络流: {stream_url} "
+        f"json_path={upload_json_path}"
+    )
