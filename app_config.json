@@ -22,17 +22,17 @@
         "pose_interval": 2,
         "stream_target_height": 480,
         "alarm_min_consecutive_frames": 3,
-        "alarm_cooldown_frames": 12
+        "alarm_cooldown_frames": 6
     },
     "debug-info": {
-        "enabled": false,
+        "enabled": true,
         "interval_frames": 30
     },
     "source": {
         "enabled": true,
         "stream_url": "rtsp://127.0.0.1:8554/mystream",
         "upload_tag": "stream_config",
-        "annotation_json": "D:\\work\\workspace\\git-repo\\annotation-tool\\annotation_json\\annotation_20260416_103757.json"
+        "annotation_json": "D:\\work\\workspace\\git-repo\\annotation-tool\\annotation_json\\annotation_20260416_115911.json"
     },
     "reporting": {
         "enabled": true,

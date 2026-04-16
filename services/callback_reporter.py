@@ -126,10 +126,11 @@ class CollisionCallbackReporter:
 
     def enqueue_pick_finished(
         self,
-        box_id: int,
+        box_id: Any,
         frame_idx: int,
         video_time_sec: float,
         upload_tag: str,
+        shelf_code: str | None = None,
     ) -> str | None:
         """入队一个算法拣货完成回调事件；如果被节流或队列满则返回 None。"""
         if not self.enabled:
@@ -142,17 +143,21 @@ class CollisionCallbackReporter:
             return None
 
         event_id = uuid.uuid4().hex
+        box_id_text = str(box_id).strip()
+        if not box_id_text:
+            return None
         context = {
             "event_id": event_id,
             "event_type": "ALGO_PICK_FINISHED",
             "upload_tag": upload_tag,
-            "box_id": int(box_id),
+            "box_id": box_id_text,
             "frame_idx": int(frame_idx),
             "video_time_sec": round(float(video_time_sec), 3),
             "detected_at_ms": now_ms,
             "task_id": self.task_id or upload_tag,
-            "shelf_code": self.shelf_code or "",
-            "point_code": self.point_code or f"B{int(box_id):02d}",
+            "shelf_code": (str(shelf_code).strip() if shelf_code is not None else "") or self.shelf_code or "",
+            # pointCode 按当前命中的货框 box_id 动态传输，避免写死配置值。
+            "point_code": box_id_text,
             "status": 1,
             "finish_time": now_ms,
         }

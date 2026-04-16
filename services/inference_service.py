@@ -310,6 +310,7 @@ class InferenceService:
         source_info = config_data.get('source_info', {}) if isinstance(config_data, dict) else {}
         if not isinstance(source_info, dict):
             source_info = {}
+        annotation_shelf_code = str(source_info.get("shelf_code", "") or "").strip()
 
         if self.state.source_type == "stream":
             marked_camera_url = str(source_info.get("camera_url", "") or "").strip()
@@ -459,10 +460,10 @@ class InferenceService:
                     for collision in cached_collisions:
                         if not collision.startswith("Box_"):
                             continue
-                        try:
-                            current_collision_box_ids.add(int(collision.split("_", 1)[1]))
-                        except Exception:
+                        box_id_text = str(collision[len("Box_"):]).strip()
+                        if not box_id_text:
                             continue
+                        current_collision_box_ids.add(box_id_text)
 
                     for box_id in list(box_consecutive_hits.keys()):
                         if box_id not in current_collision_box_ids:
@@ -487,15 +488,15 @@ class InferenceService:
                         for collision in cached_alarm_collisions:
                             if not collision.startswith("Box_"):
                                 continue
-                            try:
-                                box_id = int(collision.split("_", 1)[1])
-                            except Exception:
+                            box_id = str(collision[len("Box_"):]).strip()
+                            if not box_id:
                                 continue
                             event_id = self.callback_reporter.enqueue_pick_finished(
                                 box_id=box_id,
                                 frame_idx=frame_count,
                                 video_time_sec=video_time_sec,
                                 upload_tag=upload_tag,
+                                shelf_code=annotation_shelf_code,
                             )
                             if event_id is not None:
                                 report_event_ids.append(event_id)
