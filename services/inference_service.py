@@ -9,12 +9,23 @@ import base64
 import json
 import math
 import os
+import subprocess
 import time
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
+
+try:
+    import psutil
+except Exception:
+    psutil = None
+
+try:
+    import torch
+except Exception:
+    torch = None
 
 from core.state import STATE
 
@@ -24,6 +35,83 @@ from mmpose.structures import merge_data_samples
 from mmpose.utils import register_all_modules, adapt_mmdet_pipeline
 
 register_all_modules()
+
+
+def _parse_cuda_device_index(device_name: str) -> int:
+    """从 cuda 设备字符串中解析设备号。"""
+    name = (device_name or "").strip().lower()
+    if name.startswith("cuda:"):
+        try:
+            return int(name.split(":", 1)[1])
+        except Exception:
+            return 0
+    return 0
+
+
+def _collect_resource_debug_line(device_name: str) -> str:
+    """采集当前进程资源占用信息，优先提供 CPU/GPU 指标。"""
+    parts = []
+
+    if psutil is not None:
+        try:
+            cpu_percent = psutil.cpu_percent(interval=None)
+            parts.append(f"cpu={cpu_percent:.1f}%")
+        except Exception:
+            parts.append("cpu=n/a")
+
+        try:
+            proc_mem_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+            parts.append(f"proc_mem={proc_mem_mb:.1f}MB")
+        except Exception:
+            parts.append("proc_mem=n/a")
+
+        try:
+            sys_mem_percent = psutil.virtual_memory().percent
+            parts.append(f"sys_mem={sys_mem_percent:.1f}%")
+        except Exception:
+            parts.append("sys_mem=n/a")
+    else:
+        parts.append("cpu=n/a(psutil_missing)")
+
+    gpu_info_ready = False
+    if torch is not None and torch.cuda.is_available():
+        gpu_idx = _parse_cuda_device_index(device_name)
+        try:
+            alloc_mb = torch.cuda.memory_allocated(gpu_idx) / (1024 * 1024)
+            reserved_mb = torch.cuda.memory_reserved(gpu_idx) / (1024 * 1024)
+            parts.append(f"gpu_mem_alloc={alloc_mb:.1f}MB")
+            parts.append(f"gpu_mem_reserved={reserved_mb:.1f}MB")
+            gpu_info_ready = True
+        except Exception:
+            pass
+
+        try:
+            smi = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=utilization.gpu,memory.used,memory.total",
+                    "--format=csv,noheader,nounits",
+                    "-i",
+                    str(gpu_idx),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=0.4,
+                check=False,
+            )
+            if smi.returncode == 0 and smi.stdout.strip():
+                cols = [c.strip() for c in smi.stdout.strip().splitlines()[0].split(",")]
+                if len(cols) >= 3:
+                    parts.append(f"gpu_util={cols[0]}%")
+                    parts.append(f"gpu_mem={cols[1]}/{cols[2]}MB")
+                    gpu_info_ready = True
+        except Exception:
+            pass
+
+    if not gpu_info_ready:
+        parts.append("gpu=n/a")
+
+    return " ".join(parts)
 
 
 def _scale_polygon_points(points, sx: float, sy: float):
@@ -118,6 +206,11 @@ class InferenceService:
         self.callback_reporter = callback_reporter
         self.det_model = None
         self.pose_model = None
+        self._background_task = None
+
+    def debug_visualization_enabled(self) -> bool:
+        debug_cfg = self.app_config.get("debug-info", {})
+        return isinstance(debug_cfg, dict) and bool(debug_cfg.get("enabled", False))
 
     def ensure_models_loaded(self):
         """按需懒加载 MMDetection 和 MMPose 模型，每个进程只加载一次。"""
@@ -142,13 +235,52 @@ class InferenceService:
     async def start_inference(self):
         """准备模型，并把共享状态切换为推理模式。"""
         self.ensure_models_loaded()
+        if self.state.is_inferencing:
+            return {"status": "success", "mode": "running"}
+
         self.state.is_inferencing = True
-        return {"status": "success"}
+
+        # 流模式下默认后台推理（与前端页面解耦），避免必须打开页面才开始。
+        if self.state.source_type == "stream":
+            if self._background_task is None or self._background_task.done():
+                self._background_task = asyncio.create_task(self.websocket_inference(_NullWebSocket()))
+            return {"status": "success", "mode": "headless"}
+
+        return {"status": "success", "mode": "visual"}
 
     async def websocket_inference(self, websocket: WebSocket):
         """通过 WebSocket 向前端推送视频帧、骨架和碰撞信息。"""
+        is_null_ws = isinstance(websocket, _NullWebSocket)
+        visualization_enabled = self.debug_visualization_enabled() and (not is_null_ws)
+
+        # 若后台推理已在运行且用户打开调试可视化，先切换掉后台任务，避免双循环重复推理。
+        if (not is_null_ws) and self._background_task is not None and (not self._background_task.done()):
+            self.state.is_inferencing = False
+            try:
+                await asyncio.wait_for(self._background_task, timeout=2.0)
+            except Exception:
+                self._background_task.cancel()
+            finally:
+                self._background_task = None
+            self.state.is_inferencing = True
+
+        if not visualization_enabled and (not is_null_ws):
+            await websocket.accept()
+            await websocket.send_json({
+                "status": "debug-visual-disabled",
+                "message": "debug-info.enabled=false，仅执行后台推理与回调，不推送前端可视化帧",
+            })
+            await websocket.close()
+            return
+
         await websocket.accept()
         cap = None
+
+        # 网络流 debug 可视化模式下，前端连上 WebSocket 后自动进入推理。
+        if self.state.source_type == "stream" and visualization_enabled and not self.state.is_inferencing:
+            self.ensure_models_loaded()
+            self.state.is_inferencing = True
+            print("✅ 已在网络流模式自动启动推理会话")
 
         json_file_path = self.state.json_path or self.app_config["paths"]["default_json_file"]
 
@@ -229,6 +361,21 @@ class InferenceService:
         pose_interval = int(self.app_config["inference"].get("pose_interval", 2))
         alarm_min_consecutive_frames = int(self.app_config["inference"].get("alarm_min_consecutive_frames", 3))
         alarm_cooldown_frames = int(self.app_config["inference"].get("alarm_cooldown_frames", 12))
+
+        debug_cfg = self.app_config.get("debug-info", {})
+        if not isinstance(debug_cfg, dict):
+            debug_cfg = {}
+        debug_enabled = bool(debug_cfg.get("enabled", False))
+        try:
+            debug_interval_frames = int(debug_cfg.get("interval_frames", 30))
+        except Exception:
+            debug_interval_frames = 30
+        debug_interval_frames = max(1, debug_interval_frames)
+
+        if debug_enabled:
+            print(
+                f"ℹ️ [DEBUG-INFO] 已启用资源监控日志: interval_frames={debug_interval_frames}"
+            )
         cached_bboxes = np.empty((0, 4), dtype=np.float32)
         cached_skeletons_data = []
         cached_collisions = []
@@ -378,26 +525,57 @@ class InferenceService:
                 ms = int((video_time_sec - int(video_time_sec)) * 1000)
                 formatted_time = f"{m:02d}:{s:02d}.{ms:03d}"
 
-                payload = {
-                    "image": b64_str,
-                    "orig_width": infer_w,
-                    "skeletons": skeletons_data,
-                    "collisions": active_collisions,
-                    "alarm_collisions": alarm_collisions,
-                    "callback_event_ids": report_event_ids,
-                    "annotation_source": source_info,
-                    "stats": {
-                        "fps": round(current_fps, 1),
-                        "video_time": formatted_time,
-                        "frame_idx": frame_count
-                    }
-                }
+                if debug_enabled and (frame_count % debug_interval_frames == 0):
+                    resource_line = _collect_resource_debug_line(self.app_config["models"].get("device", ""))
+                    print(
+                        f"[DEBUG-INFO] frame={frame_count} fps={round(current_fps, 1)} "
+                        f"video_time={formatted_time} {resource_line}"
+                    )
 
-                await websocket.send_json(payload)
-                await asyncio.sleep(0.001)
+                if visualization_enabled:
+                    payload = {
+                        "image": b64_str,
+                        "orig_width": infer_w,
+                        "skeletons": skeletons_data,
+                        "collisions": active_collisions,
+                        "alarm_collisions": alarm_collisions,
+                        "callback_event_ids": report_event_ids,
+                        "annotation_source": source_info,
+                        "stats": {
+                            "fps": round(current_fps, 1),
+                            "video_time": formatted_time,
+                            "frame_idx": frame_count
+                        }
+                    }
+
+                    await websocket.send_json(payload)
+                    await asyncio.sleep(0.001)
+                else:
+                    await asyncio.sleep(0)
 
         except WebSocketDisconnect:
-            print("前端连接断开")
+            if not is_null_ws:
+                print("前端连接断开")
         finally:
+            self.state.is_inferencing = False
             if cap is not None:
                 cap.release()
+
+            # 调试页面关闭后，流模式自动回到后台推理，持续碰撞回调不中断。
+            if (not is_null_ws) and self.state.source_type == "stream":
+                self.state.is_inferencing = True
+                if self._background_task is None or self._background_task.done():
+                    self._background_task = asyncio.create_task(self.websocket_inference(_NullWebSocket()))
+
+
+class _NullWebSocket:
+    """后台无可视化推理时的空 WebSocket 适配器。"""
+
+    async def accept(self):
+        return
+
+    async def send_json(self, _payload):
+        return
+
+    async def close(self):
+        return

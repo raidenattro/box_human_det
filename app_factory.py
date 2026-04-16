@@ -38,6 +38,9 @@ def create_app():
     @app.on_event("startup")
     async def startup_event():
         await callback_reporter.start()
+        # 流模式下服务启动即自动开始推理，不依赖前端页面触发。
+        if STATE.source_type == "stream" and STATE.video_path:
+            await inference_service.start_inference()
 
     @app.on_event("shutdown")
     async def shutdown_event():
@@ -64,6 +67,20 @@ def create_app():
     async def get_first_frame():
         """返回当前视频的第一帧，编码为 base64 JPEG。"""
         return get_first_frame_b64(STATE.video_path)
+
+    @api_router.get("/runtime_state")
+    async def runtime_state():
+        """返回当前运行态，用于前端决定是否自动进入流推理视图。"""
+        debug_cfg = app_config.get("debug-info", {})
+        debug_visual_enabled = isinstance(debug_cfg, dict) and bool(debug_cfg.get("enabled", False))
+        return {
+            "status": "success",
+            "source_type": STATE.source_type,
+            "source_url": STATE.source_url,
+            "is_inferencing": STATE.is_inferencing,
+            "json_path": STATE.json_path,
+            "debug_visual_enabled": debug_visual_enabled,
+        }
 
     @api_router.post("/save_annotation")
     async def save_annotation_api(data: dict):

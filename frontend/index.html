@@ -306,6 +306,35 @@ function renderAnnotator() {
 let finalBoxes = [];
 let annotationSaved = false;
 
+async function syncAnnotationFromBackend() {
+    try {
+        const annResp = await fetch('/api/get_current_annotation');
+        if (!annResp.ok) {
+            return false;
+        }
+        const annData = await annResp.json();
+        if (annData.status !== 'success' || !Array.isArray(annData.boxes) || annData.boxes.length === 0) {
+            return false;
+        }
+
+        finalBoxes = annData.boxes;
+        annotationSaved = true;
+
+        if (Array.isArray(annData.grid_shape) && annData.grid_shape.length === 2) {
+            const rows = Number(annData.grid_shape[0]);
+            const cols = Number(annData.grid_shape[1]);
+            if (rows > 0 && cols > 0) {
+                gridRows = rows;
+                gridCols = cols;
+            }
+        }
+        return true;
+    } catch (e) {
+        console.warn('无法刷新后端当前标注。', e);
+        return false;
+    }
+}
+
 function buildFinalBoxesFromGrid() {
     let boxId = 1;
     finalBoxes = []; // 每次保存前清空数组防止重复追加
@@ -348,19 +377,7 @@ async function saveAnnotationOnly() {
 async function startInferenceOnly() {
     setUIStatus("🚀 步骤 5：正在加载 AI 模型...", "正在初始化 MMDetection 与 MMPose（仅首次耗时较长），即将进入三屏协同监控模式...", "#9b59b6");
 
-    try {
-        const annResp = await fetch('/api/get_current_annotation');
-        if (annResp.ok) {
-            const annData = await annResp.json();
-            if (annData.status === 'success' && Array.isArray(annData.boxes) && annData.boxes.length > 0) {
-                // 启动推理前强制以“后端当前 JSON 文件”为准，避免沿用页面内旧缓存。
-                finalBoxes = annData.boxes;
-                annotationSaved = true;
-            }
-        }
-    } catch (e) {
-        console.warn('无法刷新后端当前标注，继续使用当前页面缓存。', e);
-    }
+    await syncAnnotationFromBackend();
     
     const resp = await fetch('/api/start_inference', {method: 'POST'});
     if (!resp.ok) {
@@ -379,6 +396,50 @@ async function startInferenceOnly() {
     setUIStatus("🚨 步骤 5：AI 实况监控中", "系统正在全速运行！【左上】原视频叠加碰撞框，【左下】剔除背景骨骼追踪，【右侧】2D 阵列碰撞高亮指示。", "#e74c3c");
     
     startRenderEngine();
+}
+
+async function tryAutoStartStreamMode() {
+    try {
+        const resp = await fetch('/api/runtime_state');
+        if (!resp.ok) {
+            return;
+        }
+
+        const state = await resp.json();
+        if (state.status !== 'success' || state.source_type !== 'stream') {
+            return;
+        }
+
+        if (!state.debug_visual_enabled) {
+            setUIStatus(
+                "✅ 网络流后台推理中",
+                "当前为非 debug 模式：系统只做后端推理与碰撞回调，不推送前端三屏可视化。",
+                "#2ecc71"
+            );
+            return;
+        }
+
+        const annOk = await syncAnnotationFromBackend();
+        if (!annOk) {
+            setUIStatus(
+                "⚠️ 流模式待准备",
+                "当前配置为网络流自动推理，但未读到有效标注 JSON。",
+                "#f39c12"
+            );
+            return;
+        }
+
+        annCvs.style.display = "none";
+        document.getElementById('views-container').style.display = "flex";
+        setUIStatus(
+            "🚨 网络流自动推理中",
+            "已检测到网络流配置，系统已自动进入三屏推理视图。",
+            "#e74c3c"
+        );
+        startRenderEngine();
+    } catch (e) {
+        console.warn('自动进入网络流推理模式失败。', e);
+    }
 }
 
 // ========================================================
@@ -551,6 +612,8 @@ function startRenderEngine() {
         );
     };
 }
+
+tryAutoStartStreamMode();
 </script>
 </body>
 </html>

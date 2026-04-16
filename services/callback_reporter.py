@@ -32,10 +32,38 @@ class ReportRecord:
 class CollisionCallbackReporter:
     """将碰撞事件异步回调到 Java 后端。"""
 
+    @staticmethod
+    def _resolve_callback_url(cfg: dict) -> str:
+        """优先按 callback_ip 配置拼装 URL，未配置时回退 callback_url。"""
+        callback_ip = str(cfg.get("callback_ip", "")).strip()
+        callback_url = str(cfg.get("callback_url", "")).strip()
+
+        if not callback_ip:
+            return callback_url
+
+        callback_scheme = str(cfg.get("callback_scheme", "http")).strip() or "http"
+        callback_path = str(cfg.get("callback_path", "/api/pick/finish")).strip() or "/api/pick/finish"
+        callback_port_raw = str(cfg.get("callback_port", "")).strip()
+
+        if not callback_path.startswith("/"):
+            callback_path = f"/{callback_path}"
+
+        host_part = callback_ip
+        if callback_port_raw:
+            try:
+                host_part = f"{callback_ip}:{int(callback_port_raw)}"
+            except Exception:
+                host_part = f"{callback_ip}:{callback_port_raw}"
+
+        return f"{callback_scheme}://{host_part}{callback_path}"
+
     def __init__(self, reporting_cfg: dict | None = None):
         cfg = reporting_cfg or {}
         self.enabled = bool(cfg.get("enabled", False))
-        self.callback_url = str(cfg.get("callback_url", "")).strip()
+        self.callback_url = self._resolve_callback_url(cfg)
+        self.task_id = str(cfg.get("task_id", "")).strip()
+        self.shelf_code = str(cfg.get("shelf_code", "")).strip()
+        self.point_code = str(cfg.get("point_code", "")).strip()
         self.request_timeout_ms = int(cfg.get("request_timeout_ms", 800))
         self.queue_size = int(cfg.get("queue_size", 1000))
         self.cooldown_ms = int(cfg.get("cooldown_ms", 500))
@@ -122,6 +150,11 @@ class CollisionCallbackReporter:
             "frame_idx": int(frame_idx),
             "video_time_sec": round(float(video_time_sec), 3),
             "detected_at_ms": now_ms,
+            "task_id": self.task_id or upload_tag,
+            "shelf_code": self.shelf_code or "",
+            "point_code": self.point_code or f"B{int(box_id):02d}",
+            "status": 1,
+            "finish_time": now_ms,
         }
         payload = self._build_payload(context)
 
@@ -156,13 +189,11 @@ class CollisionCallbackReporter:
         """按模板生成请求体；未配置模板时使用默认字段。"""
         if not isinstance(self.payload_template, dict) or not self.payload_template:
             payload = {
-                "eventId": context["event_id"],
-                "eventType": context["event_type"],
-                "uploadTag": context["upload_tag"],
-                "boxId": context["box_id"],
-                "frameIdx": context["frame_idx"],
-                "videoTimeSec": context["video_time_sec"],
-                "detectedAtMs": context["detected_at_ms"],
+                "taskId": context["task_id"],
+                "shelfCode": context["shelf_code"],
+                "pointCode": context["point_code"],
+                "status": int(context["status"]),
+                "finishTime": int(context["finish_time"]),
             }
         else:
             payload = self._render_template_obj(self.payload_template, context)
@@ -177,6 +208,12 @@ class CollisionCallbackReporter:
         if isinstance(value, list):
             return [self._render_template_obj(v, context) for v in value]
         if isinstance(value, str):
+            # 纯占位符时保留上下文原始类型（如 int/bool），避免被强转成字符串。
+            if value.startswith("{") and value.endswith("}") and value.count("{") == 1 and value.count("}") == 1:
+                key = value[1:-1]
+                if key in context:
+                    return context[key]
+
             rendered = value
             for k, v in context.items():
                 rendered = rendered.replace("{" + k + "}", str(v))

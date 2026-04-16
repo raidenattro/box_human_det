@@ -24,15 +24,26 @@
         "alarm_min_consecutive_frames": 3,
         "alarm_cooldown_frames": 12
     },
-    "source": {
+    "debug-info": {
         "enabled": false,
-        "stream_url": "",
+        "interval_frames": 30
+    },
+    "source": {
+        "enabled": true,
+        "stream_url": "rtsp://127.0.0.1:8554/mystream",
         "upload_tag": "stream_config",
-        "annotation_json": ""
+        "annotation_json": "D:\\work\\workspace\\git-repo\\annotation-tool\\annotation_json\\annotation_20260416_103757.json"
     },
     "reporting": {
         "enabled": true,
-        "callback_url": "http://127.0.0.1:8080/api/pick/finish",
+        "callback_url": "",
+        "callback_scheme": "http",
+        "callback_ip": "192.168.1.153",
+        "callback_port": "",
+        "callback_path": "/api/yf/callback/picking-complete",
+        "task_id": "TASK-009",
+        "shelf_code": "1001",
+        "point_code": "BB",
         "request_timeout_ms": 800,
         "queue_size": 1000,
         "cooldown_ms": 500,
@@ -40,13 +51,11 @@
         "retry_backoff_ms": 100,
         "max_records": 5000,
         "payload_template": {
-            "eventId": "{event_id}",
-            "eventType": "{event_type}",
-            "uploadTag": "{upload_tag}",
-            "boxId": "{box_id}",
-            "frameIdx": "{frame_idx}",
-            "videoTimeSec": "{video_time_sec}",
-            "detectedAtMs": "{detected_at_ms}"
+            "taskId": "{task_id}",
+            "shelfCode": "{shelf_code}",
+            "pointCode": "{point_code}",
+            "status": "{status}",
+            "finishTime": "{finish_time}"
         },
         "static_fields": {
             "source": "box_human_det"

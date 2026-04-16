@@ -72,6 +72,17 @@
     },
 
     // =============================
+    // 调试资源监控日志
+    // =============================
+    "debug-info": {
+        // true: 推理期间在控制台打印 CPU/GPU 资源占用
+        "enabled": false,
+
+        // 每隔多少帧打印一次调试信息
+        "interval_frames": 30
+    },
+
+    // =============================
     // 视频来源初始化（启动时生效）
     // =============================
     "source": {
@@ -96,8 +107,19 @@
         // 是否启用回调上报
         "enabled": true,
 
-        // Java 回调地址
-        "callback_url": "http://127.0.0.1:8080/api/pick/finish",
+        // Java 回调完整地址（若配置 callback_ip，则该项可留空）
+        "callback_url": "",
+
+        // Java 回调地址组装参数（优先级高于 callback_url）
+        "callback_scheme": "http",
+        "callback_ip": "192.168.1.153",
+        "callback_port": "",
+        "callback_path": "/api/yf/callback/picking-complete",
+
+        // 新接口业务字段（可直接按后端要求配置）
+        "task_id": "TASK-009",
+        "shelf_code": "1001",
+        "point_code": "BB",
 
         // 单次请求超时（毫秒）
         "request_timeout_ms": 800,
@@ -119,26 +141,20 @@
 
         // 回调请求体模板（支持占位符替换）
         "payload_template": {
-            // 事件唯一 ID
-            "eventId": "{event_id}",
+            // 任务 ID
+            "taskId": "{task_id}",
 
-            // 事件类型（当前为 ALGO_PICK_FINISHED）
-            "eventType": "{event_type}",
+            // 货架编码
+            "shelfCode": "{shelf_code}",
 
-            // 上传会话标记
-            "uploadTag": "{upload_tag}",
+            // 点位编码
+            "pointCode": "{point_code}",
 
-            // 触发货框 ID
-            "boxId": "{box_id}",
+            // 状态（固定 1 表示完成）
+            "status": "{status}",
 
-            // 触发时帧号
-            "frameIdx": "{frame_idx}",
-
-            // 触发时视频秒数
-            "videoTimeSec": "{video_time_sec}",
-
-            // 触发时间戳（毫秒）
-            "detectedAtMs": "{detected_at_ms}"
+            // 完成时间（毫秒时间戳）
+            "finishTime": "{finish_time}"
         },
 
         // 固定附加字段（每次回调都追加）
