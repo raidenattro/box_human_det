@@ -25,14 +25,14 @@
         "alarm_cooldown_frames": 6
     },
     "debug-info": {
-        "enabled": true,
+        "enabled": false,
         "interval_frames": 30
     },
     "source": {
         "enabled": true,
         "stream_url": "rtsp://127.0.0.1:8554/mystream",
         "upload_tag": "stream_config",
-        "annotation_json": "D:\\work\\workspace\\git-repo\\annotation-tool\\annotation_json\\annotation_20260416_115911.json"
+        "annotation_json": "D:\\work\\workspace\\git-repo\\annotation-tool\\annotation_json\\annotation_20260416_174231.json"
     },
     "reporting": {
         "enabled": true,

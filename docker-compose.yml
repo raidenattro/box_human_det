@@ -1,0 +1,18 @@
+services:
+  box-human-det:
+    build:
+      context: ..
+      dockerfile: box_human_det/Dockerfile
+    container_name: box-human-det
+    restart: unless-stopped
+    ports:
+      - "8045:8045"
+    environment:
+      - TZ=Asia/Shanghai
+    # Requires Docker Desktop with WSL2 GPU support or Linux NVIDIA Container Toolkit.
+    gpus: all
+    volumes:
+      - ./app_config.docker.json:/app/app_config.json:ro
+      - ./localdata:/app/localdata
+      - ../mmpose:/workspace/mmpose:ro
+      - ../annotation-tool/annotation_json:/workspace/annotation_json:ro
