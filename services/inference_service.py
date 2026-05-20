@@ -291,7 +291,30 @@ class InferenceService:
 
         with open(json_file_path, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
-        raw_boxes = config_data.get('boxes', [])
+
+        # 支持两种标注格式：旧版直接在顶层的 'boxes'，
+        # 以及新版在 'shelves' 列表中每个 shelf 下的 'boxes'。
+        raw_boxes = []
+        if isinstance(config_data, dict):
+            if isinstance(config_data.get('boxes', None), list):
+                raw_boxes = config_data.get('boxes', [])
+            elif isinstance(config_data.get('shelves', None), list):
+                for shelf in config_data.get('shelves', []):
+                    if not isinstance(shelf, dict):
+                        continue
+                    shelf_code = shelf.get('shelf_code')
+                    shelf_boxes = shelf.get('boxes', [])
+                    if not isinstance(shelf_boxes, list):
+                        continue
+                    for b in shelf_boxes:
+                        if not isinstance(b, dict):
+                            continue
+                        # 将 shelf_code 注入到每个 box，便于后续回调使用
+                        if shelf_code is not None and 'shelf_code' not in b:
+                            b = dict(b)
+                            b['shelf_code'] = shelf_code
+                        raw_boxes.append(b)
+
         if not isinstance(raw_boxes, list):
             raw_boxes = []
 
@@ -310,7 +333,13 @@ class InferenceService:
         source_info = config_data.get('source_info', {}) if isinstance(config_data, dict) else {}
         if not isinstance(source_info, dict):
             source_info = {}
+
+        # 优先取 source_info 中的 shelf_code，如果没有则尝试取第一个 shelf 的 shelf_code
         annotation_shelf_code = str(source_info.get("shelf_code", "") or "").strip()
+        if not annotation_shelf_code and isinstance(config_data, dict):
+            shelves = config_data.get('shelves', [])
+            if isinstance(shelves, list) and len(shelves) > 0 and isinstance(shelves[0], dict):
+                annotation_shelf_code = str(shelves[0].get('shelf_code', '') or '').strip()
 
         if self.state.source_type == "stream":
             marked_camera_url = str(source_info.get("camera_url", "") or "").strip()

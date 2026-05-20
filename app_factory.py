@@ -105,7 +105,26 @@ def create_app():
         except Exception as e:
             return {"status": "error", "message": f"failed to read annotation json: {e}", "json_path": json_file_path}
 
-        boxes = config_data.get("boxes", []) if isinstance(config_data, dict) else []
+        boxes = []
+        if isinstance(config_data, dict):
+            if isinstance(config_data.get("boxes", None), list):
+                boxes = config_data.get("boxes", [])
+            elif isinstance(config_data.get("shelves", None), list):
+                for shelf in config_data.get('shelves', []):
+                    if not isinstance(shelf, dict):
+                        continue
+                    shelf_code = shelf.get('shelf_code')
+                    shelf_boxes = shelf.get('boxes', [])
+                    if not isinstance(shelf_boxes, list):
+                        continue
+                    for b in shelf_boxes:
+                        if not isinstance(b, dict):
+                            continue
+                        if shelf_code is not None and 'shelf_code' not in b:
+                            b = dict(b)
+                            b['shelf_code'] = shelf_code
+                        boxes.append(b)
+
         source_info = config_data.get("source_info", {}) if isinstance(config_data, dict) else {}
         if not isinstance(source_info, dict):
             source_info = {}
