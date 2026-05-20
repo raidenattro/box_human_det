@@ -309,11 +309,11 @@ class InferenceService:
                     for b in shelf_boxes:
                         if not isinstance(b, dict):
                             continue
-                        # 将 shelf_code 注入到每个 box，便于后续回调使用
-                        if shelf_code is not None and 'shelf_code' not in b:
-                            b = dict(b)
-                            b['shelf_code'] = shelf_code
-                        raw_boxes.append(b)
+                        # 将 shelf_code 注入到每个 box，便于后续多货架回调使用
+                        b_copy = dict(b)
+                        if shelf_code is not None:
+                            b_copy['shelf_code'] = shelf_code
+                        raw_boxes.append(b_copy)
 
         if not isinstance(raw_boxes, list):
             raw_boxes = []
@@ -378,6 +378,14 @@ class InferenceService:
             stream_resize_needed = False
 
         boxes = _build_scaled_boxes(raw_boxes, ann_w, ann_h, infer_w, infer_h)
+
+        # 建立 box_id -> shelf_code 映射，用于多货架回调
+        box_id_to_shelf_code = {}
+        for box in boxes:
+            box_id = str(box.get('box_id', '')).strip()
+            shelf_code = box.get('shelf_code') or annotation_shelf_code
+            if box_id:
+                box_id_to_shelf_code[box_id] = shelf_code
 
         print(
             f"ℹ️ 推理分辨率: source={stream_w}x{stream_h} infer={infer_w}x{infer_h} "
@@ -520,12 +528,14 @@ class InferenceService:
                             box_id = str(collision[len("Box_"):]).strip()
                             if not box_id:
                                 continue
+                            # 从映射中获取该 box 所属的 shelf_code，确保多货架正确回调
+                            shelf_code_for_callback = box_id_to_shelf_code.get(box_id, annotation_shelf_code)
                             event_id = self.callback_reporter.enqueue_pick_finished(
                                 box_id=box_id,
                                 frame_idx=frame_count,
                                 video_time_sec=video_time_sec,
                                 upload_tag=upload_tag,
-                                shelf_code=annotation_shelf_code,
+                                shelf_code=shelf_code_for_callback,
                             )
                             if event_id is not None:
                                 report_event_ids.append(event_id)

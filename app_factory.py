@@ -120,10 +120,11 @@ def create_app():
                     for b in shelf_boxes:
                         if not isinstance(b, dict):
                             continue
-                        if shelf_code is not None and 'shelf_code' not in b:
-                            b = dict(b)
-                            b['shelf_code'] = shelf_code
-                        boxes.append(b)
+                        # 将 shelf_code 注入到每个 box 的副本中
+                        b_copy = dict(b)
+                        if shelf_code is not None:
+                            b_copy['shelf_code'] = shelf_code
+                        boxes.append(b_copy)
 
         source_info = config_data.get("source_info", {}) if isinstance(config_data, dict) else {}
         if not isinstance(source_info, dict):
