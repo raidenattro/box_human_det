@@ -212,6 +212,10 @@ class InferenceService:
         debug_cfg = self.app_config.get("debug-info", {})
         return isinstance(debug_cfg, dict) and bool(debug_cfg.get("enabled", False))
 
+    def _stream_visualization_allowed(self) -> bool:
+        """仅本地调试时允许走 WebSocket 可视化路径。"""
+        return self.debug_visualization_enabled()
+
     def ensure_models_loaded(self):
         """按需懒加载 MMDetection 和 MMPose 模型，每个进程只加载一次。"""
         if self.det_model is not None and self.pose_model is not None:
@@ -243,18 +247,25 @@ class InferenceService:
         # 流模式下默认后台推理（与前端页面解耦），避免必须打开页面才开始。
         if self.state.source_type == "stream":
             if self._background_task is None or self._background_task.done():
-                self._background_task = asyncio.create_task(self.websocket_inference(_NullWebSocket()))
+                self._background_task = asyncio.create_task(self.headless_stream_inference())
             return {"status": "success", "mode": "headless"}
 
         return {"status": "success", "mode": "visual"}
 
+    async def headless_stream_inference(self):
+        """生产环境使用的纯后台流推理，不做前端编码与推送。"""
+        await self._run_inference_session(visualization_enabled=False, websocket=None)
+
     async def websocket_inference(self, websocket: WebSocket):
-        """通过 WebSocket 向前端推送视频帧、骨架和碰撞信息。"""
-        is_null_ws = isinstance(websocket, _NullWebSocket)
-        visualization_enabled = self.debug_visualization_enabled() and (not is_null_ws)
+        """仅本地调试时通过 WebSocket 推送视频帧、骨架和碰撞信息。"""
+        if isinstance(websocket, _NullWebSocket):
+            await self.headless_stream_inference()
+            return
+
+        visualization_enabled = self._stream_visualization_allowed()
 
         # 若后台推理已在运行且用户打开调试可视化，先切换掉后台任务，避免双循环重复推理。
-        if (not is_null_ws) and self._background_task is not None and (not self._background_task.done()):
+        if self._background_task is not None and (not self._background_task.done()):
             self.state.is_inferencing = False
             try:
                 await asyncio.wait_for(self._background_task, timeout=2.0)
@@ -264,7 +275,7 @@ class InferenceService:
                 self._background_task = None
             self.state.is_inferencing = True
 
-        if not visualization_enabled and (not is_null_ws):
+        if not visualization_enabled:
             await websocket.accept()
             await websocket.send_json({
                 "status": "debug-visual-disabled",
@@ -273,11 +284,15 @@ class InferenceService:
             await websocket.close()
             return
 
-        await websocket.accept()
+        await self._run_inference_session(visualization_enabled=True, websocket=websocket)
+
+    async def _run_inference_session(self, visualization_enabled: bool, websocket: WebSocket | None):
+        """统一执行一次推理会话；是否产出前端帧由 visualization_enabled 控制。"""
+        is_visual_ws = websocket is not None
         cap = None
 
         # 网络流 debug 可视化模式下，前端连上 WebSocket 后自动进入推理。
-        if self.state.source_type == "stream" and visualization_enabled and not self.state.is_inferencing:
+        if is_visual_ws and self.state.source_type == "stream" and visualization_enabled and not self.state.is_inferencing:
             self.ensure_models_loaded()
             self.state.is_inferencing = True
             print("✅ 已在网络流模式自动启动推理会话")
@@ -286,7 +301,8 @@ class InferenceService:
 
         if not os.path.exists(json_file_path):
             print(f"⚠️ [警告] 无法启动推理：未找到配置文件 {json_file_path}，请先完成前端标注！")
-            await websocket.close()
+            if websocket is not None:
+                await websocket.close()
             return
 
         with open(json_file_path, 'r', encoding='utf-8') as f:
@@ -328,7 +344,8 @@ class InferenceService:
         if stream_w <= 0 or stream_h <= 0:
             print("⚠️ [警告] 无法读取当前视频分辨率，停止本次推理")
             self.state.is_inferencing = False
-            await websocket.close()
+            if websocket is not None:
+                await websocket.close()
             if cap is not None:
                 cap.release()
             return
@@ -508,16 +525,6 @@ class InferenceService:
                     alarm_collisions = cached_alarm_collisions
                     report_event_ids = cached_report_event_ids
 
-                target_w = min(640, infer_w)
-                if target_w < infer_w:
-                    target_h = int(infer_h * (target_w / infer_w))
-                    frame_for_encode = cv2.resize(raw_frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
-                else:
-                    frame_for_encode = raw_frame
-
-                _, buffer = cv2.imencode('.jpg', frame_for_encode, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
-                b64_str = base64.b64encode(buffer).decode('utf-8')
-
                 elapsed = time.time() - start_time
                 current_fps = frame_count / elapsed if elapsed > 0 else 0
 
@@ -533,7 +540,17 @@ class InferenceService:
                         f"video_time={formatted_time} {resource_line}"
                     )
 
-                if visualization_enabled:
+                if visualization_enabled and websocket is not None:
+                    target_w = min(640, infer_w)
+                    if target_w < infer_w:
+                        target_h = int(infer_h * (target_w / infer_w))
+                        frame_for_encode = cv2.resize(raw_frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                    else:
+                        frame_for_encode = raw_frame
+
+                    _, buffer = cv2.imencode('.jpg', frame_for_encode, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+                    b64_str = base64.b64encode(buffer).decode('utf-8')
+
                     payload = {
                         "image": b64_str,
                         "orig_width": infer_w,
@@ -555,18 +572,17 @@ class InferenceService:
                     await asyncio.sleep(0)
 
         except WebSocketDisconnect:
-            if not is_null_ws:
+            if is_visual_ws:
                 print("前端连接断开")
         finally:
             self.state.is_inferencing = False
             if cap is not None:
                 cap.release()
 
-            # 调试页面关闭后，流模式自动回到后台推理，持续碰撞回调不中断。
-            if (not is_null_ws) and self.state.source_type == "stream":
+            if is_visual_ws and self.state.source_type == "stream":
                 self.state.is_inferencing = True
                 if self._background_task is None or self._background_task.done():
-                    self._background_task = asyncio.create_task(self.websocket_inference(_NullWebSocket()))
+                    self._background_task = asyncio.create_task(self.headless_stream_inference())
 
 
 class _NullWebSocket:
