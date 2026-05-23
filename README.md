@@ -4,6 +4,8 @@
 
 合并自 `box_human_det`（推理）与 `annotation_tool`（标注），统一为单个 FastAPI 服务。
 
+**接手开发请先阅读 [HANDOFF.md](./HANDOFF.md)**（合并思路、原则与后续入口）。
+
 ## 页面
 
 | 路径 | 说明 |
