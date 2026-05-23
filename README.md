@@ -81,3 +81,7 @@ docker compose up -d --build
 
 1. 旧格式：顶层 `boxes[]`
 2. 新格式（多货架）：`shelves[].boxes[]`，含 `annotation_size`、`source_info`、`video_polygon_norm`
+
+## 后续计划
+
+统一配置 UI（热生效、单页集中、最少配置项）见 [ROADMAP.md](./ROADMAP.md)。
