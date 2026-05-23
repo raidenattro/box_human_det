@@ -1,8 +1,4 @@
-"""检测 / 姿态推理流程以及 WebSocket 推流逻辑。
-
-这个模块有意把最重的运行逻辑集中在一起，保证入口文件保持轻量，
-同时也方便后续只看一个文件就能找到完整推理链路。
-"""
+"""检测 / 姿态推理流程以及 WebSocket 推流逻辑。"""
 
 import asyncio
 import base64
@@ -11,6 +7,7 @@ import math
 import os
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import cv2
@@ -27,18 +24,17 @@ try:
 except Exception:
     torch = None
 
-from core.state import STATE
-
 from mmdet.apis import init_detector, inference_detector
 from mmpose.apis import init_model as init_pose_model, inference_topdown
 from mmpose.structures import merge_data_samples
 from mmpose.utils import register_all_modules, adapt_mmdet_pipeline
 
+from services.annotation_service import flatten_annotation_boxes
+
 register_all_modules()
 
 
 def _parse_cuda_device_index(device_name: str) -> int:
-    """从 cuda 设备字符串中解析设备号。"""
     name = (device_name or "").strip().lower()
     if name.startswith("cuda:"):
         try:
@@ -49,7 +45,6 @@ def _parse_cuda_device_index(device_name: str) -> int:
 
 
 def _collect_resource_debug_line(device_name: str) -> str:
-    """采集当前进程资源占用信息，优先提供 CPU/GPU 指标。"""
     parts = []
 
     if psutil is not None:
@@ -115,7 +110,6 @@ def _collect_resource_debug_line(device_name: str) -> str:
 
 
 def _scale_polygon_points(points, sx: float, sy: float):
-    """按比例缩放多边形点。"""
     out = []
     for pt in points:
         if isinstance(pt, (list, tuple)) and len(pt) >= 2:
@@ -124,7 +118,6 @@ def _scale_polygon_points(points, sx: float, sy: float):
 
 
 def _build_scaled_boxes(raw_boxes, ann_w: float | None, ann_h: float | None, target_w: int, target_h: int):
-    """将标注框映射到当前推理帧坐标系，优先使用归一化点位。"""
     scaled = []
     for box in raw_boxes:
         pts = box.get("video_polygon", [])
@@ -148,17 +141,29 @@ def _build_scaled_boxes(raw_boxes, ann_w: float | None, ann_h: float | None, tar
     return scaled
 
 
+def _compute_infer_resolution(source_w: int, source_h: int, target_height: int):
+    target_h = max(120, int(target_height))
+    if source_h <= target_h:
+        infer_w = source_w
+        infer_h = source_h
+        resize_needed = False
+    else:
+        infer_h = target_h
+        infer_w = int(round(source_w * (infer_h / float(source_h))))
+        infer_w = max(2, infer_w - (infer_w % 2))
+        infer_h = max(2, infer_h - (infer_h % 2))
+        resize_needed = True
+    return infer_w, infer_h, resize_needed
+
+
 @dataclass
 class TrackState:
-    """最近邻跟踪器使用的单次轨迹快照。"""
     abs_x: float
     abs_y: float
     ts_sec: float
 
 
 class PersonTrackAssigner:
-    """Assign stable person ids across frames with nearest-neighbor matching."""
-
     def __init__(self, max_match_dist=220.0, stale_sec=1.2):
         self.max_match_dist = max_match_dist
         self.stale_sec = stale_sec
@@ -197,23 +202,20 @@ class PersonTrackAssigner:
 
 
 class InferenceService:
-    """管理模型生命周期和单视频的推理流。"""
-
     def __init__(self, app_config: dict, state, callback_reporter=None):
-        """保存已解析配置和共享运行态。"""
         self.app_config = app_config
         self.state = state
         self.callback_reporter = callback_reporter
         self.det_model = None
         self.pose_model = None
         self._background_task = None
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inference")
 
     def debug_visualization_enabled(self) -> bool:
         debug_cfg = self.app_config.get("debug-info", {})
         return isinstance(debug_cfg, dict) and bool(debug_cfg.get("enabled", False))
 
     def ensure_models_loaded(self):
-        """按需懒加载 MMDetection 和 MMPose 模型，每个进程只加载一次。"""
         if self.det_model is not None and self.pose_model is not None:
             return
 
@@ -232,15 +234,27 @@ class InferenceService:
             cfg_options=dict(model=dict(test_cfg=dict(output_heatmaps=False))),
         )
 
+    async def _run_detection(self, frame):
+        loop = asyncio.get_running_loop()
+        det_result = await loop.run_in_executor(self._executor, inference_detector, self.det_model, frame)
+        valid = (det_result.pred_instances.labels == 0) & (det_result.pred_instances.scores > 0.3)
+        return det_result.pred_instances.bboxes[valid].cpu().numpy()
+
+    async def _run_pose(self, frame, bboxes):
+        loop = asyncio.get_running_loop()
+        pose_results = await loop.run_in_executor(
+            self._executor,
+            lambda: inference_topdown(self.pose_model, frame, bboxes, bbox_format="xyxy"),
+        )
+        return merge_data_samples(pose_results)
+
     async def start_inference(self):
-        """准备模型，并把共享状态切换为推理模式。"""
         self.ensure_models_loaded()
         if self.state.is_inferencing:
             return {"status": "success", "mode": "running"}
 
         self.state.is_inferencing = True
 
-        # 流模式下默认后台推理（与前端页面解耦），避免必须打开页面才开始。
         if self.state.source_type == "stream":
             if self._background_task is None or self._background_task.done():
                 self._background_task = asyncio.create_task(self.websocket_inference(_NullWebSocket()))
@@ -249,11 +263,9 @@ class InferenceService:
         return {"status": "success", "mode": "visual"}
 
     async def websocket_inference(self, websocket: WebSocket):
-        """通过 WebSocket 向前端推送视频帧、骨架和碰撞信息。"""
         is_null_ws = isinstance(websocket, _NullWebSocket)
         visualization_enabled = self.debug_visualization_enabled() and (not is_null_ws)
 
-        # 若后台推理已在运行且用户打开调试可视化，先切换掉后台任务，避免双循环重复推理。
         if (not is_null_ws) and self._background_task is not None and (not self._background_task.done()):
             self.state.is_inferencing = False
             try:
@@ -276,7 +288,6 @@ class InferenceService:
         await websocket.accept()
         cap = None
 
-        # 网络流 debug 可视化模式下，前端连上 WebSocket 后自动进入推理。
         if self.state.source_type == "stream" and visualization_enabled and not self.state.is_inferencing:
             self.ensure_models_loaded()
             self.state.is_inferencing = True
@@ -285,32 +296,31 @@ class InferenceService:
         json_file_path = self.state.json_path or self.app_config["paths"]["default_json_file"]
 
         if not os.path.exists(json_file_path):
-            print(f"⚠️ [警告] 无法启动推理：未找到配置文件 {json_file_path}，请先完成前端标注！")
+            print(f"⚠️ [警告] 无法启动推理：未找到配置文件 {json_file_path}，请先完成标注！")
             await websocket.close()
             return
 
-        with open(json_file_path, 'r', encoding='utf-8') as f:
+        with open(json_file_path, "r", encoding="utf-8") as f:
             config_data = json.load(f)
-        raw_boxes = config_data.get('boxes', [])
-        if not isinstance(raw_boxes, list):
-            raw_boxes = []
 
-        annotation_size = config_data.get('annotation_size', {}) if isinstance(config_data, dict) else {}
+        raw_boxes = flatten_annotation_boxes(config_data)
+
+        annotation_size = config_data.get("annotation_size", {}) if isinstance(config_data, dict) else {}
         if not isinstance(annotation_size, dict):
             annotation_size = {}
 
-        ann_w = annotation_size.get('width')
-        ann_h = annotation_size.get('height')
+        ann_w = annotation_size.get("width")
+        ann_h = annotation_size.get("height")
         try:
             ann_w = float(ann_w) if ann_w is not None else None
             ann_h = float(ann_h) if ann_h is not None else None
         except Exception:
             ann_w, ann_h = None, None
 
-        source_info = config_data.get('source_info', {}) if isinstance(config_data, dict) else {}
+        source_info = config_data.get("source_info", {}) if isinstance(config_data, dict) else {}
         if not isinstance(source_info, dict):
             source_info = {}
-        annotation_shelf_code = str(source_info.get("shelf_code", "") or "").strip()
+        annotation_shelf_code = str(source_info.get("shelf_code", "") or source_info.get("camera_name", "") or "").strip()
 
         if self.state.source_type == "stream":
             marked_camera_url = str(source_info.get("camera_url", "") or "").strip()
@@ -321,6 +331,10 @@ class InferenceService:
                 )
 
         cap = cv2.VideoCapture(self.state.video_path)
+        if self.state.source_type == "stream":
+            stream_buffer_size = int(self.app_config["inference"].get("stream_buffer_size", 1))
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, max(1, stream_buffer_size))
+
         video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         stream_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         stream_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -334,34 +348,26 @@ class InferenceService:
             return
 
         infer_cfg = self.app_config.get("inference", {})
-        target_stream_h = int(infer_cfg.get("stream_target_height", 480) or 480)
-        target_stream_h = max(120, target_stream_h)
-
-        if self.state.source_type == "stream" and stream_h > target_stream_h:
-            infer_h = target_stream_h
-            infer_w = int(round(stream_w * (infer_h / float(stream_h))))
-            infer_w = max(2, infer_w - (infer_w % 2))
-            infer_h = max(2, infer_h - (infer_h % 2))
-            stream_resize_needed = True
-        else:
-            infer_w = stream_w
-            infer_h = stream_h
-            stream_resize_needed = False
+        infer_w, infer_h, resize_needed = _compute_infer_resolution(
+            stream_w,
+            stream_h,
+            int(infer_cfg.get("height", 480) or 480),
+        )
 
         boxes = _build_scaled_boxes(raw_boxes, ann_w, ann_h, infer_w, infer_h)
 
-        print(
-            f"ℹ️ 推理分辨率: source={stream_w}x{stream_h} infer={infer_w}x{infer_h} "
-            f"stream_resize={'on' if stream_resize_needed else 'off'}"
-        )
+        frame_rate = float(infer_cfg.get("frame_rate", 15) or 15)
+        frame_rate = max(1.0, frame_rate)
+        frame_period_sec = 1.0 / frame_rate
 
-        start_time = time.time()
-        frame_count = 0
+        pose_frame_interval = int(infer_cfg.get("pose_frame_interval", 3) or 3)
+        pose_frame_interval = max(1, pose_frame_interval)
 
-        det_interval = int(self.app_config["inference"].get("det_interval", 3))
-        pose_interval = int(self.app_config["inference"].get("pose_interval", 2))
-        alarm_min_consecutive_frames = int(self.app_config["inference"].get("alarm_min_consecutive_frames", 3))
-        alarm_cooldown_frames = int(self.app_config["inference"].get("alarm_cooldown_frames", 12))
+        preview_max_width = int(infer_cfg.get("preview_max_width", 640) or 640)
+        preview_jpeg_quality = int(infer_cfg.get("preview_jpeg_quality", 60) or 60)
+
+        alarm_min_consecutive_frames = int(infer_cfg.get("alarm_min_consecutive_frames", 3))
+        alarm_cooldown_frames = int(infer_cfg.get("alarm_cooldown_frames", 12))
 
         debug_cfg = self.app_config.get("debug-info", {})
         if not isinstance(debug_cfg, dict):
@@ -373,10 +379,16 @@ class InferenceService:
             debug_interval_frames = 30
         debug_interval_frames = max(1, debug_interval_frames)
 
-        if debug_enabled:
-            print(
-                f"ℹ️ [DEBUG-INFO] 已启用资源监控日志: interval_frames={debug_interval_frames}"
-            )
+        print(
+            f"ℹ️ 推理参数: source={stream_w}x{stream_h} height={infer_h} "
+            f"frame_rate={frame_rate} pose_frame_interval={pose_frame_interval} "
+            f"resize={'on' if resize_needed else 'off'}"
+        )
+
+        start_time = time.time()
+        frame_count = 0
+        last_frame_started_at = time.monotonic()
+
         cached_bboxes = np.empty((0, 4), dtype=np.float32)
         cached_skeletons_data = []
         cached_collisions = []
@@ -389,24 +401,22 @@ class InferenceService:
 
         try:
             while cap.isOpened() and self.state.is_inferencing:
-                ret, frame = cap.read()
+                loop_started_at = time.monotonic()
+
+                ret, frame = await asyncio.get_running_loop().run_in_executor(self._executor, cap.read)
                 if not ret:
                     print("✅ 视频推理完成，停止当前会话")
                     self.state.is_inferencing = False
                     break
 
                 frame_count += 1
-                if stream_resize_needed:
+                if resize_needed:
                     raw_frame = cv2.resize(frame, (infer_w, infer_h), interpolation=cv2.INTER_AREA)
                 else:
                     raw_frame = frame
-                run_det = ((frame_count - 1) % det_interval == 0)
-                run_pose = ((frame_count - 1) % pose_interval == 0)
 
-                if run_det:
-                    det_result = inference_detector(self.det_model, raw_frame)
-                    valid = (det_result.pred_instances.labels == 0) & (det_result.pred_instances.scores > 0.3)
-                    cached_bboxes = det_result.pred_instances.bboxes[valid].cpu().numpy()
+                cached_bboxes = await self._run_detection(raw_frame)
+                run_pose = ((frame_count - 1) % pose_frame_interval == 0)
 
                 if run_pose:
                     active_collisions = []
@@ -415,9 +425,7 @@ class InferenceService:
                     report_event_ids = []
 
                     if len(cached_bboxes) > 0:
-                        pose_results = inference_topdown(self.pose_model, raw_frame, cached_bboxes, bbox_format='xyxy')
-                        data_samples = merge_data_samples(pose_results)
-
+                        data_samples = await self._run_pose(raw_frame, cached_bboxes)
                         kpts_all = np.asarray(data_samples.pred_instances.keypoints)
                         scores_all = np.asarray(data_samples.pred_instances.keypoint_scores)
                         used_person_track_ids = set()
@@ -440,30 +448,40 @@ class InferenceService:
 
                             person_pts = []
                             for k in range(kpts_all.shape[1]):
-                                person_pts.append([float(kpts_all[p_idx][k][0]), float(kpts_all[p_idx][k][1]), float(scores_all[p_idx][k])])
-                            skeletons_data.append({"person_id": p_idx, "person_track_id": person_track_id, "keypoints": person_pts})
+                                person_pts.append([
+                                    float(kpts_all[p_idx][k][0]),
+                                    float(kpts_all[p_idx][k][1]),
+                                    float(scores_all[p_idx][k]),
+                                ])
+                            skeletons_data.append({
+                                "person_id": p_idx,
+                                "person_track_id": person_track_id,
+                                "keypoints": person_pts,
+                            })
 
                             for _, kpt_idx in [("左手", 9), ("右手", 10)]:
                                 wrist = kpts_all[p_idx][kpt_idx]
                                 score = scores_all[p_idx][kpt_idx]
                                 if score > 0.3:
                                     for box in boxes:
-                                        if cv2.pointPolygonTest(box['orig_contour'], (float(wrist[0]), float(wrist[1])), False) >= 0:
+                                        if cv2.pointPolygonTest(
+                                            box["orig_contour"],
+                                            (float(wrist[0]), float(wrist[1])),
+                                            False,
+                                        ) >= 0:
                                             active_collisions.append(f"Box_{box['box_id']}")
                                             break
 
                     cached_skeletons_data = skeletons_data
                     cached_collisions = list(set(active_collisions))
 
-                    # 仅对“报警触发”执行帧数门槛：连续命中 N 次且满足冷却帧后才触发。
                     current_collision_box_ids = set()
                     for collision in cached_collisions:
                         if not collision.startswith("Box_"):
                             continue
                         box_id_text = str(collision[len("Box_"):]).strip()
-                        if not box_id_text:
-                            continue
-                        current_collision_box_ids.add(box_id_text)
+                        if box_id_text:
+                            current_collision_box_ids.add(box_id_text)
 
                     for box_id in list(box_consecutive_hits.keys()):
                         if box_id not in current_collision_box_ids:
@@ -481,7 +499,6 @@ class InferenceService:
 
                     cached_alarm_collisions = alarm_collisions
 
-                    # 将碰撞事件异步入队给回调上报服务，避免阻塞推理主循环。
                     if self.callback_reporter is not None and cached_alarm_collisions:
                         upload_tag = self.state.upload_tag or f"u{int(self.state.upload_id or 0):06d}"
                         video_time_sec = frame_count / video_fps
@@ -502,21 +519,11 @@ class InferenceService:
                                 report_event_ids.append(event_id)
 
                     cached_report_event_ids = report_event_ids
-                else:
-                    skeletons_data = cached_skeletons_data
-                    active_collisions = cached_collisions
-                    alarm_collisions = cached_alarm_collisions
-                    report_event_ids = cached_report_event_ids
 
-                target_w = min(640, infer_w)
-                if target_w < infer_w:
-                    target_h = int(infer_h * (target_w / infer_w))
-                    frame_for_encode = cv2.resize(raw_frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
-                else:
-                    frame_for_encode = raw_frame
-
-                _, buffer = cv2.imencode('.jpg', frame_for_encode, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
-                b64_str = base64.b64encode(buffer).decode('utf-8')
+                skeletons_data = cached_skeletons_data
+                active_collisions = cached_collisions
+                alarm_collisions = cached_alarm_collisions
+                report_event_ids = cached_report_event_ids
 
                 elapsed = time.time() - start_time
                 current_fps = frame_count / elapsed if elapsed > 0 else 0
@@ -534,6 +541,20 @@ class InferenceService:
                     )
 
                 if visualization_enabled:
+                    target_w = min(preview_max_width, infer_w)
+                    if target_w < infer_w:
+                        target_h = int(infer_h * (target_w / infer_w))
+                        frame_for_encode = cv2.resize(raw_frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                    else:
+                        frame_for_encode = raw_frame
+
+                    _, buffer = cv2.imencode(
+                        ".jpg",
+                        frame_for_encode,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), preview_jpeg_quality],
+                    )
+                    b64_str = base64.b64encode(buffer).decode("utf-8")
+
                     payload = {
                         "image": b64_str,
                         "orig_width": infer_w,
@@ -545,14 +566,16 @@ class InferenceService:
                         "stats": {
                             "fps": round(current_fps, 1),
                             "video_time": formatted_time,
-                            "frame_idx": frame_count
-                        }
+                            "frame_idx": frame_count,
+                        },
                     }
 
                     await websocket.send_json(payload)
-                    await asyncio.sleep(0.001)
-                else:
-                    await asyncio.sleep(0)
+
+                elapsed_loop = time.monotonic() - loop_started_at
+                sleep_sec = frame_period_sec - elapsed_loop
+                if sleep_sec > 0:
+                    await asyncio.sleep(sleep_sec)
 
         except WebSocketDisconnect:
             if not is_null_ws:
@@ -562,7 +585,6 @@ class InferenceService:
             if cap is not None:
                 cap.release()
 
-            # 调试页面关闭后，流模式自动回到后台推理，持续碰撞回调不中断。
             if (not is_null_ws) and self.state.source_type == "stream":
                 self.state.is_inferencing = True
                 if self._background_task is None or self._background_task.done():
@@ -570,8 +592,6 @@ class InferenceService:
 
 
 class _NullWebSocket:
-    """后台无可视化推理时的空 WebSocket 适配器。"""
-
     async def accept(self):
         return
 

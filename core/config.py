@@ -1,8 +1,4 @@
-"""应用配置的严格加载与校验模块。
-
-这个模块统一负责配置结构校验，确保运行时逻辑可以直接依赖
-路径、模型地址和服务参数已经存在且合法。
-"""
+"""应用配置的严格加载与校验模块。"""
 
 import json
 import os
@@ -13,13 +9,17 @@ REQUIRED_CONFIG_KEYS = {
     "paths": [
         "templates_dir",
         "index_html",
+        "annotation_html",
         "base_localdata_dir",
         "upload_dir",
         "upload_480p_dir",
         "json_dir",
         "default_json_file",
         "counter_file",
+        "camera_ips_file",
+        "last_frame_file",
     ],
+    "video": ["transcode_height", "capture_height"],
     "models": [
         "device",
         "det_config",
@@ -27,20 +27,34 @@ REQUIRED_CONFIG_KEYS = {
         "pose_config",
         "pose_checkpoint",
     ],
-    "inference": ["det_interval", "pose_interval"],
+    "inference": [
+        "frame_rate",
+        "height",
+        "pose_frame_interval",
+        "stream_buffer_size",
+        "preview_max_width",
+        "preview_jpeg_quality",
+    ],
     "server": ["host", "port"],
 }
 
 
 def _normalize_local_path(path_value: str) -> str:
-    """规范化本地文件路径，但保留 URL 原样不动。"""
     if path_value.startswith("http://") or path_value.startswith("https://"):
         return path_value
     return os.path.normpath(path_value)
 
 
+def _validate_positive_int(cfg: dict, section: str, key: str, errors: list):
+    try:
+        value = int(cfg[section][key])
+        if value <= 0:
+            errors.append(f"字段必须大于 0: {section}.{key}")
+    except Exception:
+        errors.append(f"字段必须是整数: {section}.{key}")
+
+
 def _validate_config_or_raise(cfg: dict, config_file: str):
-    """校验必填字段和取值范围，发现问题后直接退出。"""
     errors = []
 
     for section, keys in REQUIRED_CONFIG_KEYS.items():
@@ -58,19 +72,24 @@ def _validate_config_or_raise(cfg: dict, config_file: str):
             if isinstance(value, str) and not value.strip():
                 errors.append(f"字段不能为空: {section}.{key}")
 
-    try:
-        det_interval = int(cfg["inference"]["det_interval"])
-        if det_interval <= 0:
-            errors.append("字段必须大于 0: inference.det_interval")
-    except Exception:
-        errors.append("字段必须是整数: inference.det_interval")
+    for section, key in [
+        ("video", "transcode_height"),
+        ("video", "capture_height"),
+        ("inference", "height"),
+        ("inference", "frame_rate"),
+        ("inference", "pose_frame_interval"),
+        ("inference", "stream_buffer_size"),
+        ("inference", "preview_max_width"),
+    ]:
+        if section in cfg and isinstance(cfg.get(section), dict) and key in cfg[section]:
+            _validate_positive_int(cfg, section, key, errors)
 
     try:
-        pose_interval = int(cfg["inference"]["pose_interval"])
-        if pose_interval <= 0:
-            errors.append("字段必须大于 0: inference.pose_interval")
+        jpeg_quality = int(cfg["inference"]["preview_jpeg_quality"])
+        if not (1 <= jpeg_quality <= 100):
+            errors.append("字段范围无效(1-100): inference.preview_jpeg_quality")
     except Exception:
-        errors.append("字段必须是整数: inference.pose_interval")
+        errors.append("字段必须是整数: inference.preview_jpeg_quality")
 
     try:
         port = int(cfg["server"]["port"])
@@ -86,11 +105,6 @@ def _validate_config_or_raise(cfg: dict, config_file: str):
 
 
 def load_app_config(config_file: str = CONFIG_FILE) -> dict:
-    """加载 app_config.json 并强制校验其结构。
-
-    这个过程是严格模式：文件不存在、格式错误或字段缺失都会直接
-    中止启动，避免错误配置被带到运行时才暴露。
-    """
     if not os.path.exists(config_file):
         raise SystemExit(f"配置文件不存在: {config_file}，请先创建后再启动。")
 
