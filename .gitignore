@@ -1,7 +1,14 @@
-localdata/
+__pycache__/
+*.py[cod]
+.env
+localdata/upload/
+localdata/upload/480p/
+localdata/last_frame.jpg
+localdata/camera_ips.json
+localdata/upload_counter.txt
+localdata/json/annotation_*.json
+localdata/json/*_boxes.json
 *.mp4
 *.avi
 *.mov
 *.mkv
-pycache/
-*.pyc

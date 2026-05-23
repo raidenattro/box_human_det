@@ -1,0 +1,15 @@
+services:
+  visual-dps:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: visual-dps
+    restart: unless-stopped
+    ports:
+      - "8045:8045"
+    environment:
+      - TZ=Asia/Shanghai
+    gpus: all
+    volumes:
+      - ./app_config.json:/app/app_config.json:ro
+      - ./localdata:/app/localdata
