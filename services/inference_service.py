@@ -24,14 +24,9 @@ try:
 except Exception:
     torch = None
 
-from mmdet.apis import init_detector, inference_detector
-from mmpose.apis import init_model as init_pose_model, inference_topdown
-from mmpose.structures import merge_data_samples
-from mmpose.utils import register_all_modules, adapt_mmdet_pipeline
-
 from services.annotation_service import flatten_annotation_boxes
-
-register_all_modules()
+from services.box_identity import box_collision_token, parse_collision_token
+from services.inference_backends import create_inference_backend, resolve_backend_name
 
 
 def _parse_cuda_device_index(device_name: str) -> int:
@@ -117,18 +112,56 @@ def _scale_polygon_points(points, sx: float, sy: float):
     return out
 
 
+def _polygon_max_extent(points) -> tuple[float, float]:
+    max_x = 0.0
+    max_y = 0.0
+    for pt in points:
+        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+            max_x = max(max_x, float(pt[0]))
+            max_y = max(max_y, float(pt[1]))
+    return max_x, max_y
+
+
+def _norm_polygon_valid(norm_pts) -> bool:
+    if not isinstance(norm_pts, list) or len(norm_pts) < 3:
+        return False
+    for pt in norm_pts:
+        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+            continue
+        x = float(pt[0])
+        y = float(pt[1])
+        if x < -0.01 or x > 1.01 or y < -0.01 or y > 1.01:
+            return False
+    return True
+
+
+def _scale_polygon_to_frame(pts, norm_pts, ann_w, ann_h, target_w: int, target_h: int):
+    tw = float(target_w)
+    th = float(target_h)
+    if _norm_polygon_valid(norm_pts):
+        return _scale_polygon_points(norm_pts, tw, th)
+
+    if not isinstance(pts, list) or len(pts) < 3:
+        return []
+
+    max_x, max_y = _polygon_max_extent(pts)
+    if ann_w and ann_h and ann_w > 0 and ann_h > 0:
+        sx = tw / float(ann_w) if max_x <= float(ann_w) * 1.05 else tw / max_x
+        sy = th / float(ann_h) if max_y <= float(ann_h) * 1.05 else th / max_y
+    elif max_x > 0 and max_y > 0:
+        sx = tw / max_x
+        sy = th / max_y
+    else:
+        sx = sy = 1.0
+    return _scale_polygon_points(pts, sx, sy)
+
+
 def _build_scaled_boxes(raw_boxes, ann_w: float | None, ann_h: float | None, target_w: int, target_h: int):
     scaled = []
     for box in raw_boxes:
         pts = box.get("video_polygon", [])
         norm_pts = box.get("video_polygon_norm", [])
-
-        if isinstance(norm_pts, list) and len(norm_pts) >= 3:
-            mapped_pts = _scale_polygon_points(norm_pts, float(target_w), float(target_h))
-        elif ann_w and ann_h and ann_w > 0 and ann_h > 0:
-            mapped_pts = _scale_polygon_points(pts, float(target_w) / float(ann_w), float(target_h) / float(ann_h))
-        else:
-            mapped_pts = _scale_polygon_points(pts, 1.0, 1.0)
+        mapped_pts = _scale_polygon_to_frame(pts, norm_pts, ann_w, ann_h, target_w, target_h)
 
         if len(mapped_pts) < 3:
             continue
@@ -139,6 +172,37 @@ def _build_scaled_boxes(raw_boxes, ann_w: float | None, ann_h: float | None, tar
         scaled.append(new_box)
 
     return scaled
+
+
+def _persist_live_collisions(app_config: dict, collisions: list, alarm_collisions: list) -> None:
+    """Headless 推理时将碰撞列表写入 status 文件，供监控页轮询。"""
+    camera_id = os.environ.get("INFERENCE_CAMERA_ID", "").strip()
+    if not camera_id:
+        return
+    base_dir = str(app_config.get("paths", {}).get("base_localdata_dir", "localdata"))
+    path = os.path.join(base_dir, "inference", f"{camera_id}.status.json")
+    try:
+        data: dict = {
+            "camera_id": camera_id,
+            "state": "running",
+            "message": "",
+            "updated_at": time.time(),
+            "pid": os.getpid(),
+        }
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data.update(loaded)
+        data["collisions"] = list(collisions)
+        data["alarm_collisions"] = list(alarm_collisions)
+        data["updated_at"] = time.time()
+        data["state"] = data.get("state") or "running"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except (OSError, json.JSONDecodeError):
+        pass
 
 
 def _compute_infer_resolution(source_w: int, source_h: int, target_height: int):
@@ -206,8 +270,7 @@ class InferenceService:
         self.app_config = app_config
         self.state = state
         self.callback_reporter = callback_reporter
-        self.det_model = None
-        self.pose_model = None
+        self._perception_backend = None
         self._background_task = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inference")
 
@@ -215,38 +278,21 @@ class InferenceService:
         debug_cfg = self.app_config.get("debug-info", {})
         return isinstance(debug_cfg, dict) and bool(debug_cfg.get("enabled", False))
 
-    def ensure_models_loaded(self):
-        if self.det_model is not None and self.pose_model is not None:
-            return
+    def _backend(self):
+        if self._perception_backend is None:
+            backend_name = resolve_backend_name(self.app_config)
+            print(f"ℹ️ 推理后端: {backend_name}")
+            self._perception_backend = create_inference_backend(self.app_config, self._executor)
+        return self._perception_backend
 
-        print("🚀 正在加载 AI 模型...")
-        device = self.app_config["models"]["device"]
-        self.det_model = init_detector(
-            self.app_config["models"]["det_config"],
-            self.app_config["models"]["det_checkpoint"],
-            device=device,
-        )
-        self.det_model.cfg = adapt_mmdet_pipeline(self.det_model.cfg)
-        self.pose_model = init_pose_model(
-            self.app_config["models"]["pose_config"],
-            self.app_config["models"]["pose_checkpoint"],
-            device=device,
-            cfg_options=dict(model=dict(test_cfg=dict(output_heatmaps=False))),
-        )
+    def ensure_models_loaded(self):
+        self._backend().ensure_loaded()
 
     async def _run_detection(self, frame):
-        loop = asyncio.get_running_loop()
-        det_result = await loop.run_in_executor(self._executor, inference_detector, self.det_model, frame)
-        valid = (det_result.pred_instances.labels == 0) & (det_result.pred_instances.scores > 0.3)
-        return det_result.pred_instances.bboxes[valid].cpu().numpy()
+        return await self._backend().detect_bboxes(frame)
 
     async def _run_pose(self, frame, bboxes):
-        loop = asyncio.get_running_loop()
-        pose_results = await loop.run_in_executor(
-            self._executor,
-            lambda: inference_topdown(self.pose_model, frame, bboxes, bbox_format="xyxy"),
-        )
-        return merge_data_samples(pose_results)
+        return await self._backend().estimate_pose(frame, bboxes)
 
     async def start_inference(self):
         self.ensure_models_loaded()
@@ -320,8 +366,6 @@ class InferenceService:
         source_info = config_data.get("source_info", {}) if isinstance(config_data, dict) else {}
         if not isinstance(source_info, dict):
             source_info = {}
-        annotation_shelf_code = str(source_info.get("shelf_code", "") or source_info.get("camera_name", "") or "").strip()
-
         if self.state.source_type == "stream":
             marked_camera_url = str(source_info.get("camera_url", "") or "").strip()
             if marked_camera_url and marked_camera_url != (self.state.source_url or ""):
@@ -425,12 +469,12 @@ class InferenceService:
                     report_event_ids = []
 
                     if len(cached_bboxes) > 0:
-                        data_samples = await self._run_pose(raw_frame, cached_bboxes)
-                        kpts_all = np.asarray(data_samples.pred_instances.keypoints)
-                        scores_all = np.asarray(data_samples.pred_instances.keypoint_scores)
+                        pose_batch = await self._run_pose(raw_frame, cached_bboxes)
+                        kpts_all = pose_batch.keypoints
+                        scores_all = pose_batch.keypoint_scores
                         used_person_track_ids = set()
 
-                        for p_idx in range(kpts_all.shape[0]):
+                        for p_idx in range(pose_batch.num_persons):
                             if scores_all[p_idx][5] > 0.2 and scores_all[p_idx][6] > 0.2:
                                 anchor_x = float((kpts_all[p_idx][5][0] + kpts_all[p_idx][6][0]) / 2.0)
                                 anchor_y = float((kpts_all[p_idx][5][1] + kpts_all[p_idx][6][1]) / 2.0)
@@ -469,33 +513,29 @@ class InferenceService:
                                             (float(wrist[0]), float(wrist[1])),
                                             False,
                                         ) >= 0:
-                                            active_collisions.append(f"Box_{box['box_id']}")
+                                            token = box_collision_token(box)
+                                            if token:
+                                                active_collisions.append(token)
                                             break
 
                     cached_skeletons_data = skeletons_data
                     cached_collisions = list(set(active_collisions))
 
-                    current_collision_box_ids = set()
-                    for collision in cached_collisions:
-                        if not collision.startswith("Box_"):
-                            continue
-                        box_id_text = str(collision[len("Box_"):]).strip()
-                        if box_id_text:
-                            current_collision_box_ids.add(box_id_text)
+                    current_collision_tokens = set(cached_collisions)
 
-                    for box_id in list(box_consecutive_hits.keys()):
-                        if box_id not in current_collision_box_ids:
-                            box_consecutive_hits[box_id] = 0
+                    for token in list(box_consecutive_hits.keys()):
+                        if token not in current_collision_tokens:
+                            box_consecutive_hits[token] = 0
 
-                    for box_id in current_collision_box_ids:
-                        box_consecutive_hits[box_id] = box_consecutive_hits.get(box_id, 0) + 1
-                        last_alarm_frame = box_last_alarm_frame.get(box_id, -10**9)
+                    for token in current_collision_tokens:
+                        box_consecutive_hits[token] = box_consecutive_hits.get(token, 0) + 1
+                        last_alarm_frame = box_last_alarm_frame.get(token, -10**9)
                         if (
-                            box_consecutive_hits[box_id] >= alarm_min_consecutive_frames
+                            box_consecutive_hits[token] >= alarm_min_consecutive_frames
                             and frame_count - last_alarm_frame >= alarm_cooldown_frames
                         ):
-                            alarm_collisions.append(f"Box_{box_id}")
-                            box_last_alarm_frame[box_id] = frame_count
+                            alarm_collisions.append(token)
+                            box_last_alarm_frame[token] = frame_count
 
                     cached_alarm_collisions = alarm_collisions
 
@@ -503,9 +543,7 @@ class InferenceService:
                         upload_tag = self.state.upload_tag or f"u{int(self.state.upload_id or 0):06d}"
                         video_time_sec = frame_count / video_fps
                         for collision in cached_alarm_collisions:
-                            if not collision.startswith("Box_"):
-                                continue
-                            box_id = str(collision[len("Box_"):]).strip()
+                            shelf_code, box_id = parse_collision_token(collision)
                             if not box_id:
                                 continue
                             event_id = self.callback_reporter.enqueue_pick_finished(
@@ -513,12 +551,16 @@ class InferenceService:
                                 frame_idx=frame_count,
                                 video_time_sec=video_time_sec,
                                 upload_tag=upload_tag,
-                                shelf_code=annotation_shelf_code,
+                                shelf_code=shelf_code or None,
                             )
                             if event_id is not None:
                                 report_event_ids.append(event_id)
 
                     cached_report_event_ids = report_event_ids
+                    if is_null_ws:
+                        _persist_live_collisions(
+                            self.app_config, cached_collisions, cached_alarm_collisions
+                        )
 
                 skeletons_data = cached_skeletons_data
                 active_collisions = cached_collisions

@@ -1,0 +1,31 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #0f1419;
+  color: #e8f0f6;
+  font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+
+a {
+  color: #00d4aa;
+}
+
+button {
+  font-family: inherit;
+}
+
+.wrap {
+  max-width: 1280px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.page-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0 0 16px;
+  line-height: 1.3;
+}

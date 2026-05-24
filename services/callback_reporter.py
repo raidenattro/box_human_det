@@ -137,15 +137,20 @@ class CollisionCallbackReporter:
             return None
 
         now_ms = int(time.time() * 1000)
-        dedupe_key = f"{upload_tag}:{box_id}"
+        box_id_text = str(box_id).strip()
+        if not box_id_text:
+            return None
+        shelf_part = str(shelf_code).strip() if shelf_code is not None else ""
+        dedupe_key = (
+            f"{upload_tag}:{shelf_part}:{box_id_text}"
+            if shelf_part
+            else f"{upload_tag}:{box_id_text}"
+        )
         last_ms = self._last_sent_at_ms_by_key.get(dedupe_key)
         if last_ms is not None and now_ms - last_ms < self.cooldown_ms:
             return None
 
         event_id = uuid.uuid4().hex
-        box_id_text = str(box_id).strip()
-        if not box_id_text:
-            return None
         context = {
             "event_id": event_id,
             "event_type": "ALGO_PICK_FINISHED",
@@ -176,6 +181,26 @@ class CollisionCallbackReporter:
 
         try:
             self._queue.put_nowait((event_id, payload))
+            from services.event_service import camera_id_from_upload_tag, record_event
+
+            record_event(
+                "alarm.triggered",
+                camera_id=camera_id_from_upload_tag(upload_tag),
+                severity="warning",
+                summary=f"货位告警 {shelf_part + ':' if shelf_part else ''}{box_id_text}",
+                detail={
+                    "box_id": box_id_text,
+                    "shelf_code": shelf_part,
+                    "frame_idx": int(frame_idx),
+                    "event_id": event_id,
+                },
+            )
+            record_event(
+                "callback.queued",
+                camera_id=camera_id_from_upload_tag(upload_tag),
+                summary="回调已入队",
+                detail={"event_id": event_id, "box_id": box_id_text},
+            )
             return event_id
         except asyncio.QueueFull:
             record.status = "DROPPED"
@@ -256,6 +281,13 @@ class CollisionCallbackReporter:
                 rec.response_body = response_body
                 rec.error = None
                 rec.updated_at = self._now_iso()
+                from services.event_service import record_event
+
+                record_event(
+                    "callback.sent",
+                    summary="回调成功",
+                    detail={"event_id": event_id, "http_status": http_status},
+                )
                 print(
                     f"[CALLBACK][ACK] event_id={event_id} status={http_status} "
                     f"response={json.dumps(response_body, ensure_ascii=False)}"
@@ -285,6 +317,14 @@ class CollisionCallbackReporter:
 
         rec.status = "FAILED"
         rec.updated_at = self._now_iso()
+        from services.event_service import record_event
+
+        record_event(
+            "callback.failed",
+            severity="error",
+            summary="回调失败",
+            detail={"event_id": event_id, "error": rec.error, "http_status": rec.http_status},
+        )
         print(
             f"[CALLBACK][FAILED] event_id={event_id} status={rec.http_status} "
             f"error={rec.error} response={json.dumps(rec.response_body, ensure_ascii=False)}"

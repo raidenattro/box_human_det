@@ -1,0 +1,639 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { cameraStreamUrl } from '../api/client';
+import { usePreviewStream } from '../hooks/usePreviewStream';
+import { boxRoiKey, resolveMonitorShelves } from '../lib/annotation';
+import {
+  computeContainLayout,
+  isGeometryInFrame,
+  mapPointsToVideoFrame,
+  polygonToFramePoints,
+} from '../lib/previewLayout';
+import {
+  STREAM_FORMATS,
+  STREAM_HEIGHTS,
+  heightLabel,
+  loadStreamPrefs,
+  saveStreamPrefs,
+} from '../lib/streamPrefs';
+import './MonitorPreviewStage.css';
+
+const ROI_STATE = {
+  configured: { label: '已配置', className: 'roi-configured' },
+  monitoring: { label: '监测中', className: 'roi-monitoring' },
+  hit: { label: '碰撞', className: 'roi-hit' },
+  alarm: { label: '告警', className: 'roi-alarm' },
+};
+
+const FORMAT_LABELS = { mjpeg: 'MJPEG', hls: 'HLS', webrtc: 'WebRTC' };
+
+function resolveRoiState(box, { inferRunning, hits, alarms }) {
+  const key = boxRoiKey(box);
+  if (key && alarms.has(key)) return 'alarm';
+  if (key && hits.has(key)) return 'hit';
+  if (inferRunning) return 'monitoring';
+  return 'configured';
+}
+
+function buildRoiMinimap(boxes, gridShape, { inferRunning, hits, alarms }) {
+  let rows = 0;
+  let cols = 0;
+  if (Array.isArray(gridShape) && gridShape.length === 2) {
+    rows = Number(gridShape[0]) || 0;
+    cols = Number(gridShape[1]) || 0;
+  }
+  for (const box of boxes) {
+    const layer = Number(box.layer);
+    const column = Number(box.column);
+    if (layer > 0) rows = Math.max(rows, layer);
+    if (column > 0) cols = Math.max(cols, column);
+  }
+  if (!rows || !cols) {
+    return { rows: 0, cols: 0, cells: [] };
+  }
+
+  const cellMap = new Map();
+  for (const box of boxes) {
+    const r = Number(box.layer) - 1;
+    const c = Number(box.column) - 1;
+    if (r < 0 || c < 0 || r >= rows || c >= cols) continue;
+    const state = resolveRoiState(box, { inferRunning, hits, alarms });
+    cellMap.set(`${r}-${c}`, {
+      key: boxRoiKey(box) || `${box.layer}-${box.column}`,
+      row: r,
+      col: c,
+      label: box.box_id != null ? String(box.box_id) : '',
+      state,
+      stateLabel: ROI_STATE[state].label,
+      empty: false,
+    });
+  }
+
+  const cells = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const hit = cellMap.get(`${r}-${c}`);
+      cells.push(
+        hit || {
+          key: `empty-${r}-${c}`,
+          row: r,
+          col: c,
+          label: '',
+          state: 'empty',
+          stateLabel: '',
+          empty: true,
+        },
+      );
+    }
+  }
+  return { rows, cols, cells };
+}
+
+function shelfPanelTitle(shelf) {
+  const name = String(shelf?.shelf_name || '').trim();
+  const code = String(shelf?.shelf_code || '').trim();
+  return name || code || '未命名货架';
+}
+
+function RoiMinimapGrid({ minimap, shelfLabel }) {
+  if (!minimap.cells.length) {
+    return <p className="monitor-roi-empty">该货架暂无货位，请在标注模式配置。</p>;
+  }
+  const aria = shelfLabel
+    ? `${shelfLabel} 货位矩阵 ${minimap.rows} 行 ${minimap.cols} 列`
+    : `货位矩阵 ${minimap.rows} 行 ${minimap.cols} 列`;
+  return (
+    <div className="monitor-roi-minimap-wrap">
+      <div
+        className="monitor-roi-minimap"
+        style={{ gridTemplateColumns: `repeat(${minimap.cols}, minmax(0, 1fr))` }}
+        role="img"
+        aria-label={aria}
+      >
+        {minimap.cells.map((cell) => (
+          <div
+            key={cell.key}
+            className={`monitor-roi-cell roi-${cell.state}`}
+            title={
+              cell.empty
+                ? `L${cell.row + 1} C${cell.col + 1} · 未配置`
+                : `L${cell.row + 1} C${cell.col + 1} · ${cell.label || '货位'} · ${cell.stateLabel}`
+            }
+          >
+            <span className="monitor-roi-cell-id">{cell.label || '—'}</span>
+          </div>
+        ))}
+      </div>
+      <div className="monitor-roi-minimap-axis">
+        <span>L1→L{minimap.rows}</span>
+        <span>C1→C{minimap.cols}</span>
+      </div>
+    </div>
+  );
+}
+
+function RoiOverviewPanel({ legendItems, shelfPanels, roiSummary }) {
+  const hasCells = shelfPanels.some((p) => p.minimap.cells.length > 0);
+  return (
+    <div className="monitor-panel-content">
+      <ul className="monitor-legend">
+        {legendItems.map((item) => (
+          <li key={item.className}>
+            <span className={`legend-swatch ${item.className}`} />
+            {item.label}
+          </li>
+        ))}
+      </ul>
+      {roiSummary ? <p className="monitor-roi-summary">{roiSummary}</p> : null}
+      {shelfPanels.length > 0 ? (
+        <div className="monitor-roi-shelf-list">
+          {shelfPanels.map((panel) => (
+            <section key={panel.key} className="monitor-roi-shelf-section">
+              <header className="monitor-roi-shelf-head">
+                <label className="monitor-roi-shelf-toggle">
+                  <input
+                    type="checkbox"
+                    checked={panel.roiVisible}
+                    onChange={() => panel.onToggleRoi?.()}
+                  />
+                  <span className="monitor-roi-shelf-title">{panel.title}</span>
+                </label>
+                {panel.subtitle ? (
+                  <span className="monitor-roi-shelf-code">{panel.subtitle}</span>
+                ) : null}
+                {!panel.roiVisible ? (
+                  <span className="monitor-roi-shelf-hidden-tag">画面已隐藏</span>
+                ) : null}
+              </header>
+              <RoiMinimapGrid minimap={panel.minimap} shelfLabel={panel.title} />
+            </section>
+          ))}
+        </div>
+      ) : null}
+      {!hasCells && (
+        <p className="monitor-roi-empty">暂无 ROI，请切换到「标注」配置货位。</p>
+      )}
+    </div>
+  );
+}
+
+export default function MonitorPreviewStage({
+  cameraId,
+  playback = null,
+  imageSrc,
+  boxes = [],
+  shelves = [],
+  gridShape = [],
+  shelfCorners = [],
+  annotationSize = null,
+  inferRunning = false,
+  hits = [],
+  alarms = [],
+  busy = false,
+  emptyText = '暂无画面',
+  annotateMode = false,
+  annotateCanvasRef = null,
+  annotatePanel = null,
+  shelfBar = null,
+  onFrameSize = null,
+}) {
+  const stageRef = useRef(null);
+  const imgRef = useRef(null);
+  const videoRef = useRef(null);
+  const lastFrameSizeNotifyRef = useRef({ w: 0, h: 0 });
+  const [layout, setLayout] = useState(null);
+  const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
+  const [streamPrefs, setStreamPrefs] = useState(() => loadStreamPrefs(cameraId));
+  /** 货架 code → 是否在画面上绘制 ROI（新货架默认仅当货位落在画面内时为 true） */
+  const [shelfRoiVisible, setShelfRoiVisible] = useState({});
+
+  useEffect(() => {
+    lastFrameSizeNotifyRef.current = { w: 0, h: 0 };
+  }, [cameraId]);
+
+  useEffect(() => {
+    const prefs = loadStreamPrefs(cameraId);
+    const hlsOk = Boolean(playback?.formats?.hls?.available);
+    const rtcOk = Boolean(playback?.formats?.webrtc?.available);
+    const ok =
+      prefs.format === 'mjpeg' ||
+      (prefs.format === 'hls' && hlsOk) ||
+      (prefs.format === 'webrtc' && rtcOk);
+    setStreamPrefs(ok ? prefs : { ...prefs, format: 'mjpeg' });
+  }, [cameraId, playback]);
+
+  const { format, height } = streamPrefs;
+  const mjpegSrc = cameraId && format === 'mjpeg' ? cameraStreamUrl(cameraId, height) : '';
+  const showVideo = format === 'hls' || format === 'webrtc';
+  const hasMedia = showVideo || mjpegSrc || imageSrc;
+
+  const { streamError } = usePreviewStream({
+    format,
+    playback,
+    mjpegSrc,
+    videoRef,
+    imgRef,
+    enabled: Boolean(cameraId || imageSrc),
+  });
+
+  const hitSet = useMemo(() => new Set(hits), [hits]);
+  const alarmSet = useMemo(() => new Set(alarms), [alarms]);
+
+  const updateLayout = useCallback(() => {
+    const stage = stageRef.current;
+    const el = showVideo ? videoRef.current : imgRef.current;
+    if (!stage || !el) return;
+
+    const nw = el.videoWidth || el.naturalWidth || 0;
+    const nh = el.videoHeight || el.naturalHeight || 0;
+    if (!nw) return;
+
+    // 布局始终按当前画面实际分辨率；标注坐标经 annotationSize 换算到画面再映射到 viewport
+    const fw = nw;
+    const fh = nh;
+    setFrameSize({ w: fw, h: fh });
+    const nextLayout = computeContainLayout(stage.clientWidth, stage.clientHeight, fw, fh);
+    setLayout((prev) => {
+      if (
+        prev &&
+        prev.frameW === nextLayout.frameW &&
+        prev.frameH === nextLayout.frameH &&
+        prev.drawW === nextLayout.drawW &&
+        prev.drawH === nextLayout.drawH &&
+        prev.offsetX === nextLayout.offsetX &&
+        prev.offsetY === nextLayout.offsetY
+      ) {
+        return prev;
+      }
+      return nextLayout;
+    });
+    if (onFrameSize) {
+      const notifyW = annotateMode ? fw : annotationSize?.width || fw;
+      const notifyH = annotateMode ? fh : annotationSize?.height || fh;
+      const prev = lastFrameSizeNotifyRef.current;
+      if (prev.w !== notifyW || prev.h !== notifyH) {
+        lastFrameSizeNotifyRef.current = { w: notifyW, h: notifyH };
+        onFrameSize({ width: notifyW, height: notifyH });
+      }
+    }
+  }, [annotationSize, annotateMode, onFrameSize, showVideo]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    const main = stage?.parentElement;
+    if (!stage) return undefined;
+    const ro = new ResizeObserver(() => updateLayout());
+    ro.observe(stage);
+    if (main) ro.observe(main);
+    return () => ro.disconnect();
+  }, [updateLayout]);
+
+  useEffect(() => {
+    updateLayout();
+  }, [mjpegSrc, format, imageSrc, annotateMode, updateLayout]);
+
+  useEffect(() => {
+    if (!showVideo) return undefined;
+    const video = videoRef.current;
+    if (!video) return undefined;
+    const onResize = () => updateLayout();
+    video.addEventListener('resize', onResize);
+    const tick = setInterval(updateLayout, 500);
+    return () => {
+      video.removeEventListener('resize', onResize);
+      clearInterval(tick);
+    };
+  }, [showVideo, updateLayout]);
+
+  useEffect(() => {
+    if (format !== 'mjpeg' || showVideo) return undefined;
+    const tick = setInterval(updateLayout, 500);
+    return () => clearInterval(tick);
+  }, [format, showVideo, updateLayout]);
+
+  const setFormat = (nextFormat) => {
+    if (!STREAM_FORMATS.includes(nextFormat)) return;
+    const next = { ...streamPrefs, format: nextFormat };
+    setStreamPrefs(next);
+    saveStreamPrefs(cameraId, next);
+  };
+
+  const setHeight = (nextHeight) => {
+    const h = Number(nextHeight);
+    if (!STREAM_HEIGHTS.includes(h)) return;
+    const next = { ...streamPrefs, height: h };
+    setStreamPrefs(next);
+    saveStreamPrefs(cameraId, next);
+  };
+
+  const formatAvailable = (f) => {
+    if (f === 'mjpeg') return true;
+    return Boolean(playback?.formats?.[f]?.available);
+  };
+
+  const roiContext = useMemo(
+    () => ({ inferRunning, hits: hitSet, alarms: alarmSet }),
+    [inferRunning, hitSet, alarmSet],
+  );
+
+  const annSizeForRoi = annotationSize || frameSize;
+
+  const shelfHasFrameGeometry = useCallback(
+    (shelf) => {
+      if (!layout || !shelf) return false;
+      const fw = layout.frameW;
+      const fh = layout.frameH;
+      const corners = mapPointsToVideoFrame(shelf.shelf_corners, null, annSizeForRoi, fw, fh);
+      if (isGeometryInFrame(corners, fw, fh)) return true;
+      return (shelf.boxes || []).some((box) =>
+        isGeometryInFrame(
+          mapPointsToVideoFrame(
+            box.video_polygon,
+            box.video_polygon_norm,
+            annSizeForRoi,
+            fw,
+            fh,
+          ),
+          fw,
+          fh,
+        ),
+      );
+    },
+    [layout, annSizeForRoi],
+  );
+
+  const shelfListKey = useMemo(
+    () => (Array.isArray(shelves) ? shelves.map((s) => s.shelf_code).join('|') : ''),
+    [shelves],
+  );
+
+  useEffect(() => {
+    if (!layout || annotateMode || !shelfListKey) return;
+    setShelfRoiVisible((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const shelf of shelves) {
+        const code = String(shelf.shelf_code || '').trim();
+        if (!code || Object.prototype.hasOwnProperty.call(next, code)) continue;
+        next[code] = shelfHasFrameGeometry(shelf);
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [shelfListKey, layout, shelves, annotateMode, shelfHasFrameGeometry]);
+
+  useEffect(() => {
+    setShelfRoiVisible({});
+  }, [cameraId]);
+
+  const toggleShelfRoi = useCallback((code) => {
+    const key = String(code || '').trim();
+    if (!key) return;
+    setShelfRoiVisible((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const displayBoxes = useMemo(() => {
+    if (annotateMode) return boxes;
+    return boxes.filter((box) => {
+      const code = String(box.shelf_code || '').trim();
+      if (!code) return true;
+      if (!Object.prototype.hasOwnProperty.call(shelfRoiVisible, code)) {
+        return true;
+      }
+      return Boolean(shelfRoiVisible[code]);
+    });
+  }, [boxes, shelfRoiVisible, annotateMode]);
+
+  const shelfPanels = useMemo(() => {
+    const list = resolveMonitorShelves({ shelves, boxes });
+    if (list.length) {
+      return list.map((s) => {
+        const code = String(s.shelf_code || '').trim();
+        const title = shelfPanelTitle(s);
+        const name = String(s.shelf_name || '').trim();
+        const roiVisible = shelfRoiVisible[code] !== false;
+        return {
+          key: code || title,
+          shelfCode: code,
+          title,
+          subtitle: name && code && name !== title ? code : '',
+          minimap: buildRoiMinimap(s.boxes || [], s.grid_shape, roiContext),
+          roiVisible: shelfRoiVisible[code] !== false,
+          onToggleRoi: () => toggleShelfRoi(code),
+        };
+      });
+    }
+    return [
+      {
+        key: 'all',
+        shelfCode: '',
+        title: '货位总览',
+        subtitle: '',
+        minimap: buildRoiMinimap(boxes, gridShape, roiContext),
+        roiVisible: true,
+        onToggleRoi: null,
+      },
+    ];
+  }, [shelves, boxes, gridShape, roiContext, shelfRoiVisible, toggleShelfRoi]);
+
+  const roiSummary = useMemo(() => {
+    if (annotateMode || !shelves.length) return '';
+    const shown = displayBoxes.length;
+    const total = boxes.length;
+    const shelfCount = shelves.length;
+    if (shown === total) {
+      return `${shelfCount} 个货架，共 ${total} 个货位 ROI`;
+    }
+    return `画面显示 ${shown} / ${total} 个货位（${shelfCount} 个货架，可在下方勾选）`;
+  }, [annotateMode, shelves.length, displayBoxes.length, boxes.length]);
+
+  const shelfOutlines = useMemo(() => {
+    if (Array.isArray(shelves) && shelves.length) {
+      return shelves.filter((s) => {
+        if (!Array.isArray(s.shelf_corners) || s.shelf_corners.length < 3) return false;
+        const code = String(s.shelf_code || '').trim();
+        if (code && shelfRoiVisible[code] === false) return false;
+        return true;
+      });
+    }
+    if (shelfCorners.length >= 3) {
+      return [{ shelf_code: '', shelf_corners: shelfCorners }];
+    }
+    return [];
+  }, [shelves, shelfCorners, shelfRoiVisible]);
+
+  const multiShelf = Array.isArray(shelves) && shelves.length > 1;
+
+  const legendItems = [
+    ROI_STATE.configured,
+    ROI_STATE.monitoring,
+    ROI_STATE.hit,
+    ROI_STATE.alarm,
+  ];
+
+  const panelModeLabel = annotateMode ? '标注' : '监控';
+  const panelBody = annotateMode ? annotatePanel : (
+    <RoiOverviewPanel
+      legendItems={legendItems}
+      shelfPanels={shelfPanels}
+      roiSummary={roiSummary}
+    />
+  );
+
+  return (
+    <div className="monitor-stage">
+      <div className="monitor-stage-main">
+        <div className={`monitor-stage-viewport${busy && !hasMedia ? ' is-busy' : ''}`} ref={stageRef}>
+        {cameraId ? (
+          <div className="monitor-stream-bar" role="group" aria-label="实时预览设置">
+            <select
+              className="monitor-stream-select"
+              value={height}
+              onChange={(e) => setHeight(Number(e.target.value))}
+              disabled={format !== 'mjpeg'}
+              title={format === 'mjpeg' ? '分辨率（MJPEG）' : '分辨率仅对 MJPEG 生效'}
+            >
+              {STREAM_HEIGHTS.map((h) => (
+                <option key={h} value={h}>
+                  {heightLabel(h)}
+                </option>
+              ))}
+            </select>
+            <select
+              className="monitor-stream-select"
+              value={format}
+              onChange={(e) => setFormat(e.target.value)}
+              title="传输格式"
+            >
+              {STREAM_FORMATS.map((f) => (
+                <option key={f} value={f} disabled={!formatAvailable(f)}>
+                  {FORMAT_LABELS[f]}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+
+        {hasMedia ? (
+          <>
+            <div className="monitor-media-fit">
+              <div
+                className={`monitor-media-fit-inner${layout ? '' : ' is-loading'}${annotateMode ? ' is-annotate' : ''}`}
+                style={
+                  layout
+                    ? { width: `${layout.drawW}px`, height: `${layout.drawH}px` }
+                    : undefined
+                }
+              >
+                <video
+                  ref={videoRef}
+                  className={`monitor-stage-media-fit${showVideo ? '' : ' is-hidden'}`}
+                  autoPlay
+                  muted
+                  playsInline
+                  onLoadedMetadata={updateLayout}
+                />
+                <img
+                  ref={imgRef}
+                  src={imageSrc || undefined}
+                  alt=""
+                  className={`monitor-stage-media-fit${showVideo ? ' is-hidden' : ''}`}
+                  onLoad={updateLayout}
+                />
+                {annotateMode && annotateCanvasRef ? (
+                  <canvas
+                    ref={(node) => {
+                      annotateCanvasRef.current = node;
+                    }}
+                    className="monitor-annotate-overlay"
+                    aria-hidden={false}
+                  />
+                ) : null}
+                {layout && !annotateMode ? (
+                  <svg
+                    className="monitor-stage-svg"
+                    viewBox={`0 0 ${layout.frameW} ${layout.frameH}`}
+                    preserveAspectRatio="none"
+                  >
+                    {shelfOutlines.map((shelf) => (
+                      <polygon
+                        key={shelf.shelf_code || 'shelf-outline'}
+                        className="roi-shelf-outline"
+                        points={polygonToFramePoints(
+                          shelf.shelf_corners,
+                          annotationSize || frameSize,
+                          null,
+                          layout.frameW,
+                          layout.frameH,
+                        )}
+                      />
+                    ))}
+                    {displayBoxes.map((box) => {
+                      const state = resolveRoiState(box, {
+                        inferRunning,
+                        hits: hitSet,
+                        alarms: alarmSet,
+                      });
+                      const ann = annotationSize || frameSize;
+                      const pts = polygonToFramePoints(
+                        box.video_polygon,
+                        ann,
+                        box.video_polygon_norm,
+                        layout.frameW,
+                        layout.frameH,
+                      );
+                      const framePoly = mapPointsToVideoFrame(
+                        box.video_polygon,
+                        box.video_polygon_norm,
+                        ann,
+                        layout.frameW,
+                        layout.frameH,
+                      );
+                      const cx =
+                        framePoly.reduce((s, p) => s + p[0], 0) / (framePoly.length || 1);
+                      const cy =
+                        framePoly.reduce((s, p) => s + p[1], 0) / (framePoly.length || 1);
+                      return (
+                        <g
+                          key={boxRoiKey(box) || `${box.layer}-${box.column}`}
+                          className={`roi-shape ${ROI_STATE[state].className}`}
+                        >
+                          <polygon points={pts} />
+                          <text x={cx} y={cy} className="roi-label">
+                            {box.box_id != null
+                              ? multiShelf && box.shelf_code
+                                ? `${box.shelf_code}:${box.box_id}`
+                                : String(box.box_id)
+                              : ''}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                ) : null}
+              </div>
+            </div>
+            {streamError ? <div className="monitor-stream-hint">{streamError}</div> : null}
+          </>
+        ) : (
+          <div className="monitor-stage-empty">{busy ? '正在加载画面…' : emptyText}</div>
+        )}
+        </div>
+        {shelfBar ? <div className="monitor-stage-shelf-slot">{shelfBar}</div> : null}
+      </div>
+
+      <aside
+        id="monitor-side-panel"
+        className="monitor-side-panel"
+        aria-labelledby="monitor-panel-drawer-title"
+      >
+        <header className="monitor-side-panel-header">
+          <div className="monitor-panel-drawer-heading">
+            <h2 id="monitor-panel-drawer-title">面板</h2>
+            <span className="monitor-panel-mode-tag">{panelModeLabel}</span>
+          </div>
+        </header>
+        <div className="monitor-panel-drawer-body">{panelBody}</div>
+      </aside>
+    </div>
+  );
+}

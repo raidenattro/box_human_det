@@ -1,0 +1,333 @@
+"""按摄像头启停独立推理 Docker 容器。"""
+
+import json
+import os
+import time
+
+from core.config import load_app_config
+from services.camera_service import normalize_rtsp_url
+from services.inference_backends import resolve_backend_name
+from services.annotation_service import ensure_camera_annotation_file
+from services.runtime_config_service import get_effective_settings
+
+INFERENCE_CONTAINER_PREFIX = os.environ.get("INFERENCE_CONTAINER_PREFIX", "visual-dps-infer-")
+INFERENCE_IMAGE = os.environ.get("INFERENCE_IMAGE", "visual-dps-inference:latest")
+INFERENCE_LITE_IMAGE = os.environ.get("INFERENCE_LITE_IMAGE", "visual-dps-inference-lite:latest")
+HOST_PROJECT_ROOT = os.environ.get("HOST_PROJECT_ROOT", "").strip()
+INFERENCE_JSON_PATH = os.environ.get(
+    "INFERENCE_JSON_PATH",
+    "localdata/json/precise_boxes_new.json",
+)
+INFERENCE_STATUS_DIR = os.environ.get("INFERENCE_STATUS_DIR", "localdata/inference")
+
+
+def resolve_inference_json_rel(camera_id: str, json_dir: str = "localdata/json") -> str:
+    default = INFERENCE_JSON_PATH
+    if default.startswith("/app/"):
+        default = default[len("/app/") :]
+    cam_rel = camera_annotation_path(json_dir, camera_id)
+    if not cam_rel:
+        return default
+    if HOST_PROJECT_ROOT:
+        host_path = os.path.abspath(os.path.join(HOST_PROJECT_ROOT, cam_rel))
+        if os.path.isfile(host_path):
+            return cam_rel
+    elif os.path.isfile(cam_rel):
+        return cam_rel
+    return default
+
+
+def _docker_client():
+    try:
+        import docker
+    except ImportError as exc:
+        raise RuntimeError("未安装 docker SDK，无法管理推理容器") from exc
+    try:
+        return docker.from_env()
+    except Exception as exc:
+        raise RuntimeError(f"无法连接 Docker: {exc}") from exc
+
+
+def container_name(camera_id: str) -> str:
+    return f"{INFERENCE_CONTAINER_PREFIX}{camera_id}"
+
+
+def _status_file(camera_id: str) -> str:
+    return os.path.join(INFERENCE_STATUS_DIR, f"{camera_id}.status.json")
+
+
+def _read_worker_status(camera_id: str) -> dict | None:
+    path = _status_file(camera_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        return json.loads(open(path, "r", encoding="utf-8").read())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _map_docker_status(docker_status: str, exit_code: int | None = None) -> str:
+    status = (docker_status or "").lower()
+    if status == "running":
+        return "running"
+    if status in ("created", "restarting"):
+        return "starting"
+    if status == "paused":
+        return "paused"
+    if status == "exited":
+        if exit_code not in (None, 0):
+            return "error"
+        return "stopped"
+    if status in ("dead", "removing"):
+        return "error"
+    return "stopped"
+
+
+def get_inference_status(camera_id: str) -> dict:
+    name = container_name(camera_id)
+    worker = _read_worker_status(camera_id) or {}
+    base = {
+        "camera_id": camera_id,
+        "container_name": name,
+        "status": "stopped",
+        "container_id": "",
+        "message": worker.get("message", ""),
+        "started_at": worker.get("started_at"),
+        "updated_at": worker.get("updated_at"),
+        "stream_url": worker.get("stream_url", ""),
+    }
+
+    try:
+        client = _docker_client()
+        container = client.containers.get(name)
+        container.reload()
+        exit_code = container.attrs.get("State", {}).get("ExitCode")
+        mapped = _map_docker_status(container.status, exit_code)
+        base.update(
+            {
+                "status": mapped,
+                "container_id": container.id[:12],
+                "docker_status": container.status,
+                "exit_code": exit_code,
+            }
+        )
+        if mapped == "running" and worker.get("state") == "running":
+            base["message"] = worker.get("message") or "推理运行中"
+        elif mapped == "error":
+            logs = container.logs(tail=20).decode("utf-8", errors="replace")
+            base["message"] = "检测服务异常退出，请重试"
+        return base
+    except Exception as exc:
+        if "No such container" in str(exc) or "not found" in str(exc).lower():
+            if worker.get("state") in ("running", "starting"):
+                base["status"] = worker.get("state", "stopped")
+            return base
+        base["status"] = "error"
+        base["message"] = str(exc)
+        return base
+
+
+def _host_bind(rel_path: str, container_subpath: str | None = None, read_only: bool = False) -> str:
+    if not HOST_PROJECT_ROOT:
+        raise RuntimeError("未配置 HOST_PROJECT_ROOT，无法挂载卷启动推理容器")
+    host_path = os.path.abspath(os.path.join(HOST_PROJECT_ROOT, rel_path))
+    container_path = container_subpath or f"/app/{rel_path}"
+    suffix = ":ro" if read_only else ""
+    return f"{host_path}:{container_path}{suffix}"
+
+
+def _image_exists(client, image: str) -> bool:
+    import docker
+
+    try:
+        client.images.get(image)
+        return True
+    except docker.errors.ImageNotFound:
+        return False
+
+
+def _resolve_inference_image(client, backend: str) -> tuple[str, str]:
+    """返回 (镜像名, 实际后端)。优先配置项，缺失时回退到 lite 镜像。"""
+    explicit = os.environ.get("INFERENCE_IMAGE", "").strip()
+    if explicit:
+        if _image_exists(client, explicit):
+            eff = "mediapipe" if "lite" in explicit.lower() else backend
+            return explicit, eff
+        if _image_exists(client, INFERENCE_LITE_IMAGE):
+            return INFERENCE_LITE_IMAGE, "mediapipe"
+        return explicit, backend
+
+    if backend == "mediapipe":
+        if _image_exists(client, INFERENCE_LITE_IMAGE):
+            return INFERENCE_LITE_IMAGE, "mediapipe"
+        return INFERENCE_LITE_IMAGE, "mediapipe"
+
+    if _image_exists(client, INFERENCE_IMAGE):
+        return INFERENCE_IMAGE, "mmpose"
+    if _image_exists(client, INFERENCE_LITE_IMAGE):
+        return INFERENCE_LITE_IMAGE, "mediapipe"
+    return INFERENCE_IMAGE, "mmpose"
+
+
+def _stream_url_for_container(url: str) -> str:
+    rewritten = normalize_rtsp_url(url)
+    if "127.0.0.1" in rewritten or "localhost" in rewritten:
+        return rewritten.replace("127.0.0.1", "host.docker.internal").replace("localhost", "host.docker.internal")
+    return rewritten
+
+
+def start_inference_container(camera: dict, request=None) -> dict:
+    import docker
+
+    camera_id = str(camera.get("id") or camera.get("path") or "").strip()
+    if not camera_id:
+        return {"error": "摄像头信息不完整"}
+
+    stream_url = str(camera.get("url") or "").strip()
+    if not stream_url:
+        return {"error": "请填写视频流地址"}
+
+    name = container_name(camera_id)
+    client = _docker_client()
+
+    try:
+        old = client.containers.get(name)
+        if old.status == "running":
+            return {"status": "success", "inference": get_inference_status(camera_id), "message": "已在运行"}
+        old.remove(force=True)
+    except docker.errors.NotFound:
+        pass
+
+    app_config = load_app_config()
+    paths = app_config.get("paths", {})
+    json_dir = str(paths.get("json_dir", "localdata/json"))
+    default_json = str(paths.get("default_json_file", INFERENCE_JSON_PATH))
+    json_rel = ensure_camera_annotation_file(camera_id, json_dir, default_json, camera=camera)
+    if not os.path.isfile(json_rel) and HOST_PROJECT_ROOT:
+        host_json = os.path.join(HOST_PROJECT_ROOT, json_rel)
+        if not os.path.isfile(host_json):
+            json_rel = resolve_inference_json_rel(camera_id, json_dir)
+
+    binds = [
+        _host_bind("localdata"),
+        _host_bind("app_config.json", read_only=True),
+    ]
+    effective = get_effective_settings(app_config, camera)
+    backend = resolve_backend_name(app_config, overrides=effective)
+    infer_image, backend = _resolve_inference_image(client, backend)
+    env = {
+        "INFERENCE_CAMERA_ID": camera_id,
+        "INFERENCE_STREAM_URL": _stream_url_for_container(stream_url),
+        "INFERENCE_JSON_PATH": f"/app/{json_rel}",
+        "INFERENCE_BACKEND": backend,
+        "RTSP_HOST_REWRITE": "host.docker.internal",
+        "INFERENCE_FRAME_RATE": str(effective.get("inference.frame_rate", 15)),
+        "INFERENCE_HEIGHT": str(effective.get("inference.height", 480)),
+        "INFERENCE_POSE_FRAME_INTERVAL": str(effective.get("inference.pose_frame_interval", 3)),
+        "INFERENCE_DEBUG_VISUAL": "1" if effective.get("debug-info.enabled") else "0",
+    }
+
+    device_requests = []
+    use_gpu = os.environ.get("INFERENCE_USE_GPU", "1") == "1"
+    if backend == "mediapipe":
+        use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
+    if use_gpu:
+        device_requests.append(docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]]))
+
+    try:
+        container = client.containers.run(
+            image=infer_image,
+            name=name,
+            detach=True,
+            environment=env,
+            volumes=binds,
+            extra_hosts={"host.docker.internal": "host-gateway"},
+            device_requests=device_requests or None,
+            command=["python", "inference_worker.py"],
+            labels={"visual-dps.role": "inference", "visual-dps.camera_id": camera_id},
+        )
+    except Exception as exc:
+        import docker
+
+        err = str(exc)
+        if isinstance(exc, docker.errors.ImageNotFound) or "No such image" in err:
+            return {
+                "error": (
+                    "未找到推理 Docker 镜像。本地请先执行: "
+                    "./scripts/build-inference-lite-image.sh"
+                )
+            }
+        if "HOST_PROJECT_ROOT" in err:
+            return {"error": "未配置 HOST_PROJECT_ROOT，无法挂载数据目录启动检测"}
+        return {"error": f"启动检测失败: {err[:200]}"}
+
+    os.makedirs(INFERENCE_STATUS_DIR, exist_ok=True)
+    with open(_status_file(camera_id), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "camera_id": camera_id,
+                "state": "starting",
+                "message": "正在启动",
+                "updated_at": time.time(),
+                "stream_url": stream_url,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    from services.event_service import record_event
+
+    record_event(
+        "inference.started",
+        camera_id=camera_id,
+        summary="检测已启动",
+        detail={"stream_url": stream_url},
+    )
+    return {
+        "status": "success",
+        "container_id": container.id[:12],
+        "container_name": name,
+        "inference": get_inference_status(camera_id),
+    }
+
+
+def stop_inference_container(camera_id: str, request=None) -> dict:
+    import docker
+
+    name = container_name(camera_id)
+    client = _docker_client()
+    try:
+        container = client.containers.get(name)
+        container.stop(timeout=15)
+        container.remove()
+    except docker.errors.NotFound:
+        pass
+    except Exception as exc:
+        return {"error": "停止检测失败，请稍后重试"}
+
+    status_path = _status_file(camera_id)
+    if os.path.exists(status_path):
+        try:
+            data = json.loads(open(status_path, "r", encoding="utf-8").read())
+            data["state"] = "stopped"
+            data["message"] = "已手动停止"
+            data["updated_at"] = time.time()
+            with open(status_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    from services.event_service import record_event
+
+    record_event("inference.stopped", camera_id=camera_id, summary="检测已停止")
+    return {"status": "success", "inference": get_inference_status(camera_id)}
+
+
+def attach_inference_status(cameras: list[dict]) -> list[dict]:
+    result = []
+    for cam in cameras:
+        cid = str(cam.get("id") or "")
+        item = {**cam, "inference": get_inference_status(cid) if cid else {"status": "stopped"}}
+        result.append(item)
+    return result

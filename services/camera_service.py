@@ -1,42 +1,55 @@
-"""摄像头地址管理与抓帧服务。"""
+"""摄像头地址管理、在线状态与抓帧服务。"""
 
 import base64
+import hashlib
 import json
 import os
+import time
 from typing import List
 
 import cv2
 
 from services.video_service import read_non_black_frame, resize_frame_to_height
 
+RTSP_HOST_REWRITE = os.environ.get("RTSP_HOST_REWRITE", "")
+PROBE_TTL_SEC = max(5, int(os.environ.get("CAMERA_PROBE_TTL", "20")))
+
+_camera_runtime: dict = {}
+
+
+def normalize_rtsp_url(url: str) -> str:
+    if not RTSP_HOST_REWRITE:
+        return url
+    if "127.0.0.1" in url:
+        return url.replace("127.0.0.1", RTSP_HOST_REWRITE)
+    if "localhost" in url:
+        return url.replace("localhost", RTSP_HOST_REWRITE)
+    return url
+
+
+def camera_id_from_url(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+
+
+def camera_thumbnail_path(frames_dir: str, camera_id: str) -> str:
+    os.makedirs(frames_dir, exist_ok=True)
+    return os.path.join(frames_dir, f"{camera_id}.jpg")
+
+
+def stable_camera_id(record: dict) -> str:
+    return str(record.get("id") or record.get("path") or camera_id_from_url(record.get("url", "")))
+
 
 def load_camera_ips(camera_ips_file: str) -> List[dict]:
-    if not os.path.exists(camera_ips_file):
-        return []
+    from services.camera_store import load_cameras
 
-    try:
-        data = json.loads(open(camera_ips_file, "r", encoding="utf-8").read())
-    except (json.JSONDecodeError, OSError):
-        return []
-
-    if not isinstance(data, list):
-        return []
-
-    items = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url", "")).strip()
-        name = str(item.get("name", "")).strip()
-        if url:
-            items.append({"name": name or url, "url": url})
-    return items
+    return [{"name": c["name"], "url": c["url"]} for c in load_cameras(camera_ips_file)]
 
 
 def save_camera_ips(camera_ips_file: str, items: List[dict]):
-    os.makedirs(os.path.dirname(camera_ips_file) or ".", exist_ok=True)
-    with open(camera_ips_file, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
+    from services.camera_store import save_camera_ips as _save
+
+    _save(camera_ips_file, items)
 
 
 def frame_to_base64(frame) -> str | None:
@@ -47,29 +60,163 @@ def frame_to_base64(frame) -> str | None:
 
 
 def save_last_frame(last_frame_file: str, frame):
+    if not last_frame_file:
+        return
     os.makedirs(os.path.dirname(last_frame_file) or ".", exist_ok=True)
     cv2.imwrite(last_frame_file, frame)
 
 
-def capture_camera_frame(url: str, capture_height: int, last_frame_file: str):
-    cap = cv2.VideoCapture(url)
+def probe_camera_online(url: str, max_reads: int = 8) -> bool:
+    stream_url = normalize_rtsp_url(url)
+    cap = cv2.VideoCapture(stream_url)
     if not cap.isOpened():
         cap.release()
+        return False
+    online = False
+    for _ in range(max_reads):
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            online = True
+            break
+    cap.release()
+    return online
+
+
+def _update_runtime_status(camera_id: str, online: bool) -> dict:
+    now = time.time()
+    state = _camera_runtime.setdefault(camera_id, {})
+    was_online = bool(state.get("online"))
+
+    if online:
+        if not was_online or state.get("online_since") is None:
+            state["online_since"] = now
+        state["online"] = True
+        activity_seconds = int(now - state["online_since"])
+    else:
+        state["online"] = False
+        state["online_since"] = None
+        activity_seconds = 0
+
+    state["last_check"] = now
+    return {"online": online, "activity_seconds": activity_seconds, "last_check": now}
+
+
+def get_camera_status(url: str, *, force_probe: bool = False) -> dict:
+    camera_id = camera_id_from_url(url.strip())
+    now = time.time()
+    state = _camera_runtime.get(camera_id)
+    if (
+        not force_probe
+        and state
+        and state.get("last_check")
+        and (now - float(state["last_check"])) < PROBE_TTL_SEC
+    ):
+        online = bool(state.get("online"))
+        activity_seconds = 0
+        if online and state.get("online_since"):
+            activity_seconds = int(now - state["online_since"])
+        return {
+            "id": camera_id,
+            "online": online,
+            "activity_seconds": activity_seconds,
+            "last_check": state["last_check"],
+        }
+
+    online = probe_camera_online(url)
+    status = _update_runtime_status(camera_id, online)
+    status["id"] = camera_id
+    return status
+
+
+def list_cameras_with_status(camera_ips_file: str, frames_dir: str, with_inference: bool = True) -> List[dict]:
+    from services.camera_store import load_cameras
+
+    items = load_cameras(camera_ips_file)
+    result = []
+    for item in items:
+        url = item["url"]
+        cid = stable_camera_id(item)
+        status = get_camera_status(url)
+        thumb_path = camera_thumbnail_path(frames_dir, cid)
+        last_frame_at = os.path.getmtime(thumb_path) if os.path.exists(thumb_path) else None
+        result.append(
+            {
+                **item,
+                "id": cid,
+                "online": status["online"],
+                "activity_seconds": status["activity_seconds"],
+                "last_frame_at": last_frame_at,
+                "has_thumbnail": os.path.exists(thumb_path),
+                "mediamtx_managed": item.get("source_type") in ("v4l2", "rtsp_pull", "publisher"),
+            }
+        )
+    if with_inference:
+        from services.inference_container_service import attach_inference_status
+
+        return attach_inference_status(result)
+    return result
+
+
+def resolve_camera_id_for_url(camera_ips_file: str, raw_url: str) -> str:
+    from services.camera_store import load_cameras
+
+    for rec in load_cameras(camera_ips_file):
+        if rec.get("url") == raw_url:
+            return stable_camera_id(rec)
+    return camera_id_from_url(raw_url)
+
+
+def capture_camera_frame(
+    url: str,
+    capture_height: int,
+    frames_dir: str,
+    last_frame_file: str = "",
+    camera_ips_file: str = "",
+):
+    raw_url = str(url).strip()
+    if not raw_url:
+        return {"error": "url is required"}
+
+    camera_id = (
+        resolve_camera_id_for_url(camera_ips_file, raw_url)
+        if camera_ips_file
+        else camera_id_from_url(raw_url)
+    )
+    stream_url = normalize_rtsp_url(raw_url)
+    cap = cv2.VideoCapture(stream_url)
+    if not cap.isOpened():
+        cap.release()
+        _update_runtime_status(camera_id, False)
         return {"error": "failed to open camera stream"}
 
     frame = read_non_black_frame(cap)
     cap.release()
     if frame is None:
+        _update_runtime_status(camera_id, False)
         return {"error": "failed to read frame from camera"}
 
     frame = resize_frame_to_height(frame, capture_height)
+    thumb_path = camera_thumbnail_path(frames_dir, camera_id)
+    cv2.imwrite(thumb_path, frame)
     save_last_frame(last_frame_file, frame)
+    _update_runtime_status(camera_id, True)
 
     image_b64 = frame_to_base64(frame)
     if image_b64 is None:
         return {"error": "failed to encode frame"}
 
-    return {"status": "success", "image": image_b64}
+    runtime = _camera_runtime.get(camera_id, {})
+    online_since = runtime.get("online_since")
+    activity_seconds = int(time.time() - online_since) if online_since else 0
+
+    return {
+        "status": "success",
+        "image": image_b64,
+        "camera_id": camera_id,
+        "last_frame_at": os.path.getmtime(thumb_path),
+        "online": True,
+        "activity_seconds": activity_seconds,
+    }
 
 
 def get_last_frame_b64(last_frame_file: str):
@@ -85,3 +232,10 @@ def get_last_frame_b64(last_frame_file: str):
         return {"error": "failed to encode frame"}
 
     return {"status": "success", "image": image_b64}
+
+
+def get_camera_thumbnail_path(frames_dir: str, camera_id: str) -> str | None:
+    path = camera_thumbnail_path(frames_dir, camera_id)
+    if os.path.exists(path):
+        return path
+    return None

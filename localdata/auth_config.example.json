@@ -1,0 +1,20 @@
+{
+  "enabled": true,
+  "session_secret": "请改为随机长字符串",
+  "session_ttl_hours": 24,
+  "local": {
+    "enabled": true,
+    "users_file": "localdata/auth_users.json"
+  },
+  "oauth2": {
+    "enabled": true,
+    "display_name": "企业单点登录",
+    "client_id": "your-client-id",
+    "client_secret_env": "OAUTH2_CLIENT_SECRET",
+    "authorize_url": "https://sso.example.com/oauth2/authorize",
+    "token_url": "https://sso.example.com/oauth2/token",
+    "userinfo_url": "https://sso.example.com/oauth2/userinfo",
+    "scopes": "openid profile email",
+    "redirect_path": "/api/auth/oauth2/callback"
+  }
+}
