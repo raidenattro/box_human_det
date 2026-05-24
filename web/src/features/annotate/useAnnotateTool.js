@@ -1037,6 +1037,92 @@ export function useAnnotateTool(canvasRef, options = {}) {
     return '/api/annotation';
   }, []);
 
+  const applyAnnotationPayload = useCallback(
+    (payload, options = {}) => {
+      const silent = options.silent === true;
+      if (payload?.status === 'error' || payload?.error) {
+        setShelves([]);
+        setSelectedShelfCode('');
+        return false;
+      }
+      if (payload?.status !== 'success') {
+        return false;
+      }
+
+      const ann = payload.data || payload;
+      if (!ann || typeof ann !== 'object') {
+        return false;
+      }
+
+      const annCvs = getCanvas();
+      if (ann.annotation_size) {
+        const aw = Number(ann.annotation_size.width) || 0;
+        const ah = Number(ann.annotation_size.height) || 0;
+        if (aw > 0 && ah > 0) {
+          annotationSizeRef.current = { width: aw, height: ah };
+          if (annCvs && !streamOverlay) {
+            annCvs.width = aw;
+            annCvs.height = ah;
+            coordSpaceRef.current = { w: aw, h: ah };
+          }
+        }
+      }
+
+      if (ann.source_info) {
+        annotationSourceRef.current = {
+          capture_source: ann.source_info.capture_source || 'file',
+          camera_url: ann.source_info.camera_url || '',
+          camera_name: ann.source_info.camera_name || '',
+          shelf_code: ann.source_info.shelf_code || '',
+        };
+        if (annotationSourceRef.current.camera_url) {
+          setCameraIp(annotationSourceRef.current.camera_url);
+        }
+      }
+
+      if (Array.isArray(ann.shelves)) {
+        const nextShelves = ann.shelves.filter((s) => s && s.shelf_code);
+        if (!nextShelves.length) {
+          return false;
+        }
+        const prevCode = String(selectedShelfCodeRef.current || '').trim();
+        const keepIdx = prevCode
+          ? nextShelves.findIndex((s) => String(s.shelf_code || '').trim() === prevCode)
+          : -1;
+        const pickIdx = keepIdx >= 0 ? keepIdx : 0;
+        const pickShelf = nextShelves[pickIdx];
+        setShelves(nextShelves);
+        activeShelfIndexRef.current = pickIdx;
+        setSelectedShelfCode(pickShelf.shelf_code);
+        loadShelfIntoEditor(pickShelf);
+        setCameraName(pickShelf.shelf_code || '');
+      } else if (Array.isArray(ann.boxes) && ann.boxes.length) {
+        const legacyShelfCode =
+          (ann.source_info && (ann.source_info.shelf_code || ann.source_info.camera_name)) ||
+          'SHELF_1';
+        const legacyShelf = {
+          shelf_code: legacyShelfCode,
+          shelf_corners: ann.shelf_corners || [],
+          grid_shape: ann.grid_shape || [gridRows, gridCols],
+          boxes: ann.boxes,
+        };
+        setShelves([legacyShelf]);
+        activeShelfIndexRef.current = 0;
+        setSelectedShelfCode(legacyShelfCode);
+        loadShelfIntoEditor(legacyShelf);
+        setCameraName(legacyShelfCode);
+      } else {
+        return false;
+      }
+
+      if (!silent) {
+        setStatus('已加载已保存的标注，可继续编辑。', 'ok');
+      }
+      return true;
+    },
+    [getCanvas, gridRows, gridCols, loadShelfIntoEditor, setStatus, streamOverlay],
+  );
+
   const loadAnnotationOnStartup = useCallback(
     async (options) => {
       const opts = options || {};
@@ -1046,84 +1132,12 @@ export function useAnnotateTool(canvasRef, options = {}) {
       }
       try {
         const payload = await apiGet(annotationApiPath());
-        if (payload?.error || payload?.status === 'error') {
-          return;
-        }
-
-        const ann = payload && (payload.data || payload);
-        if (!ann || payload?.status === 'error') {
-          return;
-        }
-
-        const annCvs = getCanvas();
-        if (ann.annotation_size) {
-          const aw = Number(ann.annotation_size.width) || 0;
-          const ah = Number(ann.annotation_size.height) || 0;
-          if (aw > 0 && ah > 0) {
-            annotationSizeRef.current = { width: aw, height: ah };
-            if (annCvs && !streamOverlay) {
-              annCvs.width = aw;
-              annCvs.height = ah;
-              coordSpaceRef.current = { w: aw, h: ah };
-            }
-          }
-        }
-
-        if (ann.source_info) {
-          annotationSourceRef.current = {
-            capture_source: ann.source_info.capture_source || 'file',
-            camera_url: ann.source_info.camera_url || '',
-            camera_name: ann.source_info.camera_name || '',
-            shelf_code: ann.source_info.shelf_code || '',
-          };
-          if (annotationSourceRef.current.camera_url) {
-            setCameraIp(annotationSourceRef.current.camera_url);
-          }
-        }
-
-        if (Array.isArray(ann.shelves)) {
-          const nextShelves = ann.shelves.filter((s) => s && s.shelf_code);
-          if (!nextShelves.length) {
-            return;
-          }
-          const prevCode = String(selectedShelfCodeRef.current || '').trim();
-          const keepIdx = prevCode
-            ? nextShelves.findIndex((s) => String(s.shelf_code || '').trim() === prevCode)
-            : -1;
-          const pickIdx = keepIdx >= 0 ? keepIdx : 0;
-          const pickShelf = nextShelves[pickIdx];
-          setShelves(nextShelves);
-          activeShelfIndexRef.current = pickIdx;
-          setSelectedShelfCode(pickShelf.shelf_code);
-          loadShelfIntoEditor(pickShelf);
-          setCameraName(pickShelf.shelf_code || '');
-        } else if (Array.isArray(ann.boxes) && ann.boxes.length) {
-          const legacyShelfCode =
-            (ann.source_info && (ann.source_info.shelf_code || ann.source_info.camera_name)) ||
-            'SHELF_1';
-          const legacyShelf = {
-            shelf_code: legacyShelfCode,
-            shelf_corners: ann.shelf_corners || [],
-            grid_shape: ann.grid_shape || [gridRows, gridCols],
-            boxes: ann.boxes,
-          };
-          setShelves([legacyShelf]);
-          activeShelfIndexRef.current = 0;
-          setSelectedShelfCode(legacyShelfCode);
-          loadShelfIntoEditor(legacyShelf);
-          setCameraName(legacyShelfCode);
-        } else {
-          return;
-        }
-
-        if (!silent) {
-          setStatus('已加载已保存的标注，可继续编辑。', 'ok');
-        }
+        applyAnnotationPayload(payload, { silent });
       } catch {
         // no-op: 没有标注文件时不显示
       }
     },
-    [getCanvas, gridRows, gridCols, loadShelfIntoEditor, setStatus, embedded, annotationApiPath],
+    [embedded, annotationApiPath, applyAnnotationPayload],
   );
 
   const loadLastFrameOnStartup = useCallback(async () => {
@@ -1598,6 +1612,17 @@ export function useAnnotateTool(canvasRef, options = {}) {
     }, 700);
   }, [embedded, autoSaveAnnotations]);
 
+  /** 若存在挂起的防抖保存则立即执行并 await 完成，无挂起时直接返回 */
+  const flushAutoSave = useCallback(async () => {
+    if (!embedded) return { ok: true, skipped: true };
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+      return autoSaveAnnotations();
+    }
+    return { ok: true, skipped: true };
+  }, [embedded, autoSaveAnnotations]);
+
   useEffect(() => {
     autoSaveRef.current = {
       immediate: autoSaveAnnotations,
@@ -1871,13 +1896,13 @@ export function useAnnotateTool(canvasRef, options = {}) {
   }, []);
 
   useEffect(() => {
-    if (!embedded || !fixedCamera?.id) return undefined;
+    if (!embedded || !fixedCamera?.id || streamOverlay) return undefined;
     const camKey = String(fixedCamera.id);
     if (annotationBootstrappedRef.current === camKey) return undefined;
     annotationBootstrappedRef.current = camKey;
     loadAnnotationOnStartup({ silent: true });
     return undefined;
-  }, [embedded, fixedCamera?.id, loadAnnotationOnStartup]);
+  }, [embedded, fixedCamera?.id, streamOverlay, loadAnnotationOnStartup]);
 
   const loadSelectedShelfRef = useRef(loadSelectedShelf);
   loadSelectedShelfRef.current = loadSelectedShelf;
@@ -2099,10 +2124,12 @@ export function useAnnotateTool(canvasRef, options = {}) {
     deleteCameraIp,
     saveAnnotation,
     saveAllAnnotations,
+    flushAutoSave,
     persistCurrentShelfIfReady,
     finishAnnotation,
     resetAnnotation,
     syncCanvasSize,
+    applyAnnotationPayload,
     videoFileRef,
   };
 }

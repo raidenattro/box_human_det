@@ -4,7 +4,6 @@ import { usePreviewStream } from '../hooks/usePreviewStream';
 import { boxRoiKey, resolveMonitorShelves } from '../lib/annotation';
 import {
   computeContainLayout,
-  isGeometryInFrame,
   mapPointsToVideoFrame,
   polygonToFramePoints,
 } from '../lib/previewLayout';
@@ -25,6 +24,18 @@ const ROI_STATE = {
 };
 
 const FORMAT_LABELS = { mjpeg: 'MJPEG', hls: 'HLS', webrtc: 'WebRTC' };
+
+const COCO_LINES = [
+  [15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11], [6, 12], [5, 6], [5, 7], [6, 8],
+  [7, 9], [8, 10], [1, 2], [0, 1], [0, 2], [1, 3], [2, 4], [3, 5], [4, 6],
+];
+
+const SKELETON_CONF = 0.2;
+
+function scaleInferPoint(x, y, inferW, inferH, frameW, frameH) {
+  if (!inferW || !inferH) return [x, y];
+  return [(x * frameW) / inferW, (y * frameH) / inferH];
+}
 
 function resolveRoiState(box, { inferRunning, hits, alarms }) {
   const key = boxRoiKey(box);
@@ -48,7 +59,11 @@ function buildRoiMinimap(boxes, gridShape, { inferRunning, hits, alarms }) {
     if (column > 0) cols = Math.max(cols, column);
   }
   if (!rows || !cols) {
-    return { rows: 0, cols: 0, cells: [] };
+    const count = boxes.length;
+    if (!count) return { rows: 0, cols: 0, cells: [] };
+    const side = Math.ceil(Math.sqrt(count));
+    rows = side;
+    cols = side;
   }
 
   const cellMap = new Map();
@@ -104,24 +119,35 @@ function RoiMinimapGrid({ minimap, shelfLabel }) {
   return (
     <div className="monitor-roi-minimap-wrap">
       <div
-        className="monitor-roi-minimap"
-        style={{ gridTemplateColumns: `repeat(${minimap.cols}, minmax(0, 1fr))` }}
-        role="img"
-        aria-label={aria}
+        className="monitor-roi-minimap-fit"
+        style={{
+          '--minimap-cols': minimap.cols,
+          '--minimap-rows': minimap.rows,
+        }}
       >
-        {minimap.cells.map((cell) => (
-          <div
-            key={cell.key}
-            className={`monitor-roi-cell roi-${cell.state}`}
-            title={
-              cell.empty
-                ? `L${cell.row + 1} C${cell.col + 1} · 未配置`
-                : `L${cell.row + 1} C${cell.col + 1} · ${cell.label || '货位'} · ${cell.stateLabel}`
-            }
-          >
-            <span className="monitor-roi-cell-id">{cell.label || '—'}</span>
-          </div>
-        ))}
+        <div
+          className="monitor-roi-minimap"
+          style={{
+            gridTemplateColumns: `repeat(${minimap.cols}, minmax(0, 1fr))`,
+            gridTemplateRows: `repeat(${minimap.rows}, minmax(0, 1fr))`,
+          }}
+          role="img"
+          aria-label={aria}
+        >
+          {minimap.cells.map((cell) => (
+            <div
+              key={cell.key}
+              className={`monitor-roi-cell roi-${cell.state}`}
+              title={
+                cell.empty
+                  ? `L${cell.row + 1} C${cell.col + 1} · 未配置`
+                  : `L${cell.row + 1} C${cell.col + 1} · ${cell.label || '货位'} · ${cell.stateLabel}`
+              }
+            >
+              <span className="monitor-roi-cell-id">{cell.label || '—'}</span>
+            </div>
+          ))}
+        </div>
       </div>
       <div className="monitor-roi-minimap-axis">
         <span>L1→L{minimap.rows}</span>
@@ -131,7 +157,7 @@ function RoiMinimapGrid({ minimap, shelfLabel }) {
   );
 }
 
-function RoiOverviewPanel({ legendItems, shelfPanels, roiSummary }) {
+function RoiOverviewPanel({ legendItems, shelfPanels }) {
   const hasCells = shelfPanels.some((p) => p.minimap.cells.length > 0);
   return (
     <div className="monitor-panel-content">
@@ -143,25 +169,14 @@ function RoiOverviewPanel({ legendItems, shelfPanels, roiSummary }) {
           </li>
         ))}
       </ul>
-      {roiSummary ? <p className="monitor-roi-summary">{roiSummary}</p> : null}
       {shelfPanels.length > 0 ? (
         <div className="monitor-roi-shelf-list">
           {shelfPanels.map((panel) => (
             <section key={panel.key} className="monitor-roi-shelf-section">
               <header className="monitor-roi-shelf-head">
-                <label className="monitor-roi-shelf-toggle">
-                  <input
-                    type="checkbox"
-                    checked={panel.roiVisible}
-                    onChange={() => panel.onToggleRoi?.()}
-                  />
-                  <span className="monitor-roi-shelf-title">{panel.title}</span>
-                </label>
+                <span className="monitor-roi-shelf-title">{panel.title}</span>
                 {panel.subtitle ? (
                   <span className="monitor-roi-shelf-code">{panel.subtitle}</span>
-                ) : null}
-                {!panel.roiVisible ? (
-                  <span className="monitor-roi-shelf-hidden-tag">画面已隐藏</span>
                 ) : null}
               </header>
               <RoiMinimapGrid minimap={panel.minimap} shelfLabel={panel.title} />
@@ -188,6 +203,11 @@ export default function MonitorPreviewStage({
   inferRunning = false,
   hits = [],
   alarms = [],
+  liveSkeletons = [],
+  liveInferWidth = 0,
+  liveInferHeight = 0,
+  showSkeletonLayer = true,
+  showRoiLayer = true,
   busy = false,
   emptyText = '暂无画面',
   annotateMode = false,
@@ -203,9 +223,6 @@ export default function MonitorPreviewStage({
   const [layout, setLayout] = useState(null);
   const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
   const [streamPrefs, setStreamPrefs] = useState(() => loadStreamPrefs(cameraId));
-  /** 货架 code → 是否在画面上绘制 ROI（新货架默认仅当货位落在画面内时为 true） */
-  const [shelfRoiVisible, setShelfRoiVisible] = useState({});
-
   useEffect(() => {
     lastFrameSizeNotifyRef.current = { w: 0, h: 0 };
   }, [cameraId]);
@@ -335,73 +352,11 @@ export default function MonitorPreviewStage({
     [inferRunning, hitSet, alarmSet],
   );
 
-  const annSizeForRoi = annotationSize || frameSize;
-
-  const shelfHasFrameGeometry = useCallback(
-    (shelf) => {
-      if (!layout || !shelf) return false;
-      const fw = layout.frameW;
-      const fh = layout.frameH;
-      const corners = mapPointsToVideoFrame(shelf.shelf_corners, null, annSizeForRoi, fw, fh);
-      if (isGeometryInFrame(corners, fw, fh)) return true;
-      return (shelf.boxes || []).some((box) =>
-        isGeometryInFrame(
-          mapPointsToVideoFrame(
-            box.video_polygon,
-            box.video_polygon_norm,
-            annSizeForRoi,
-            fw,
-            fh,
-          ),
-          fw,
-          fh,
-        ),
-      );
-    },
-    [layout, annSizeForRoi],
-  );
-
-  const shelfListKey = useMemo(
-    () => (Array.isArray(shelves) ? shelves.map((s) => s.shelf_code).join('|') : ''),
-    [shelves],
-  );
-
-  useEffect(() => {
-    if (!layout || annotateMode || !shelfListKey) return;
-    setShelfRoiVisible((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const shelf of shelves) {
-        const code = String(shelf.shelf_code || '').trim();
-        if (!code || Object.prototype.hasOwnProperty.call(next, code)) continue;
-        next[code] = shelfHasFrameGeometry(shelf);
-        changed = true;
-      }
-      return changed ? next : prev;
-    });
-  }, [shelfListKey, layout, shelves, annotateMode, shelfHasFrameGeometry]);
-
-  useEffect(() => {
-    setShelfRoiVisible({});
-  }, [cameraId]);
-
-  const toggleShelfRoi = useCallback((code) => {
-    const key = String(code || '').trim();
-    if (!key) return;
-    setShelfRoiVisible((prev) => ({ ...prev, [key]: !prev[key] }));
-  }, []);
-
   const displayBoxes = useMemo(() => {
     if (annotateMode) return boxes;
-    return boxes.filter((box) => {
-      const code = String(box.shelf_code || '').trim();
-      if (!code) return true;
-      if (!Object.prototype.hasOwnProperty.call(shelfRoiVisible, code)) {
-        return true;
-      }
-      return Boolean(shelfRoiVisible[code]);
-    });
-  }, [boxes, shelfRoiVisible, annotateMode]);
+    if (!showRoiLayer) return [];
+    return boxes;
+  }, [boxes, annotateMode, showRoiLayer]);
 
   const shelfPanels = useMemo(() => {
     const list = resolveMonitorShelves({ shelves, boxes });
@@ -410,15 +365,12 @@ export default function MonitorPreviewStage({
         const code = String(s.shelf_code || '').trim();
         const title = shelfPanelTitle(s);
         const name = String(s.shelf_name || '').trim();
-        const roiVisible = shelfRoiVisible[code] !== false;
         return {
           key: code || title,
           shelfCode: code,
           title,
           subtitle: name && code && name !== title ? code : '',
           minimap: buildRoiMinimap(s.boxes || [], s.grid_shape, roiContext),
-          roiVisible: shelfRoiVisible[code] !== false,
-          onToggleRoi: () => toggleShelfRoi(code),
         };
       });
     }
@@ -429,37 +381,70 @@ export default function MonitorPreviewStage({
         title: '货位总览',
         subtitle: '',
         minimap: buildRoiMinimap(boxes, gridShape, roiContext),
-        roiVisible: true,
-        onToggleRoi: null,
       },
     ];
-  }, [shelves, boxes, gridShape, roiContext, shelfRoiVisible, toggleShelfRoi]);
+  }, [shelves, boxes, gridShape, roiContext]);
 
-  const roiSummary = useMemo(() => {
-    if (annotateMode || !shelves.length) return '';
-    const shown = displayBoxes.length;
-    const total = boxes.length;
-    const shelfCount = shelves.length;
-    if (shown === total) {
-      return `${shelfCount} 个货架，共 ${total} 个货位 ROI`;
+  const skeletonOverlay = useMemo(() => {
+    if (
+      annotateMode ||
+      !showSkeletonLayer ||
+      !inferRunning ||
+      !layout ||
+      !liveSkeletons.length
+    ) {
+      return null;
     }
-    return `画面显示 ${shown} / ${total} 个货位（${shelfCount} 个货架，可在下方勾选）`;
-  }, [annotateMode, shelves.length, displayBoxes.length, boxes.length]);
+    const fw = layout.frameW;
+    const fh = layout.frameH;
+    const inferW = liveInferWidth > 0 ? liveInferWidth : fw;
+    const inferH = liveInferHeight > 0 ? liveInferHeight : fh;
+    const scale = (x, y) => scaleInferPoint(x, y, inferW, inferH, fw, fh);
+    return liveSkeletons.map((person, pi) => {
+      const pts = person?.keypoints;
+      if (!Array.isArray(pts) || !pts.length) return null;
+      const lines = [];
+      COCO_LINES.forEach((line, li) => {
+        const p1 = pts[line[0]];
+        const p2 = pts[line[1]];
+        if (!p1 || !p2 || p1[2] <= SKELETON_CONF || p2[2] <= SKELETON_CONF) return;
+        const [x1, y1] = scale(p1[0], p1[1]);
+        const [x2, y2] = scale(p2[0], p2[1]);
+        lines.push(
+          <line
+            key={`${pi}-${li}`}
+            className="roi-skeleton-line"
+            x1={x1}
+            y1={y1}
+            x2={x2}
+            y2={y2}
+          />,
+        );
+      });
+      return lines.length ? <g key={`skel-${pi}`}>{lines}</g> : null;
+    });
+  }, [
+    annotateMode,
+    showSkeletonLayer,
+    inferRunning,
+    layout,
+    liveSkeletons,
+    liveInferWidth,
+    liveInferHeight,
+  ]);
 
   const shelfOutlines = useMemo(() => {
+    if (!showRoiLayer && !annotateMode) return [];
     if (Array.isArray(shelves) && shelves.length) {
-      return shelves.filter((s) => {
-        if (!Array.isArray(s.shelf_corners) || s.shelf_corners.length < 3) return false;
-        const code = String(s.shelf_code || '').trim();
-        if (code && shelfRoiVisible[code] === false) return false;
-        return true;
-      });
+      return shelves.filter(
+        (s) => Array.isArray(s.shelf_corners) && s.shelf_corners.length >= 3,
+      );
     }
     if (shelfCorners.length >= 3) {
       return [{ shelf_code: '', shelf_corners: shelfCorners }];
     }
     return [];
-  }, [shelves, shelfCorners, shelfRoiVisible]);
+  }, [shelves, shelfCorners, showRoiLayer, annotateMode]);
 
   const multiShelf = Array.isArray(shelves) && shelves.length > 1;
 
@@ -472,11 +457,7 @@ export default function MonitorPreviewStage({
 
   const panelModeLabel = annotateMode ? '标注' : '监控';
   const panelBody = annotateMode ? annotatePanel : (
-    <RoiOverviewPanel
-      legendItems={legendItems}
-      shelfPanels={shelfPanels}
-      roiSummary={roiSummary}
-    />
+    <RoiOverviewPanel legendItems={legendItems} shelfPanels={shelfPanels} />
   );
 
   return (
@@ -567,47 +548,50 @@ export default function MonitorPreviewStage({
                         )}
                       />
                     ))}
-                    {displayBoxes.map((box) => {
-                      const state = resolveRoiState(box, {
-                        inferRunning,
-                        hits: hitSet,
-                        alarms: alarmSet,
-                      });
-                      const ann = annotationSize || frameSize;
-                      const pts = polygonToFramePoints(
-                        box.video_polygon,
-                        ann,
-                        box.video_polygon_norm,
-                        layout.frameW,
-                        layout.frameH,
-                      );
-                      const framePoly = mapPointsToVideoFrame(
-                        box.video_polygon,
-                        box.video_polygon_norm,
-                        ann,
-                        layout.frameW,
-                        layout.frameH,
-                      );
-                      const cx =
-                        framePoly.reduce((s, p) => s + p[0], 0) / (framePoly.length || 1);
-                      const cy =
-                        framePoly.reduce((s, p) => s + p[1], 0) / (framePoly.length || 1);
-                      return (
-                        <g
-                          key={boxRoiKey(box) || `${box.layer}-${box.column}`}
-                          className={`roi-shape ${ROI_STATE[state].className}`}
-                        >
-                          <polygon points={pts} />
-                          <text x={cx} y={cy} className="roi-label">
-                            {box.box_id != null
-                              ? multiShelf && box.shelf_code
-                                ? `${box.shelf_code}:${box.box_id}`
-                                : String(box.box_id)
-                              : ''}
-                          </text>
-                        </g>
-                      );
-                    })}
+                    {showRoiLayer
+                      ? displayBoxes.map((box) => {
+                          const state = resolveRoiState(box, {
+                            inferRunning,
+                            hits: hitSet,
+                            alarms: alarmSet,
+                          });
+                          const ann = annotationSize || frameSize;
+                          const pts = polygonToFramePoints(
+                            box.video_polygon,
+                            ann,
+                            box.video_polygon_norm,
+                            layout.frameW,
+                            layout.frameH,
+                          );
+                          const framePoly = mapPointsToVideoFrame(
+                            box.video_polygon,
+                            box.video_polygon_norm,
+                            ann,
+                            layout.frameW,
+                            layout.frameH,
+                          );
+                          const cx =
+                            framePoly.reduce((s, p) => s + p[0], 0) / (framePoly.length || 1);
+                          const cy =
+                            framePoly.reduce((s, p) => s + p[1], 0) / (framePoly.length || 1);
+                          return (
+                            <g
+                              key={boxRoiKey(box) || `${box.layer}-${box.column}`}
+                              className={`roi-shape ${ROI_STATE[state].className}`}
+                            >
+                              <polygon points={pts} />
+                              <text x={cx} y={cy} className="roi-label">
+                                {box.box_id != null
+                                  ? multiShelf && box.shelf_code
+                                    ? `${box.shelf_code}:${box.box_id}`
+                                    : String(box.box_id)
+                                  : ''}
+                              </text>
+                            </g>
+                          );
+                        })
+                      : null}
+                    {skeletonOverlay}
                   </svg>
                 ) : null}
               </div>

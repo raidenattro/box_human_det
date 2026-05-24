@@ -162,22 +162,53 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  height: 220px;
+  min-height: 220px;
+  max-height: 220px;
   padding-bottom: 12px;
   border-bottom: 1px solid #2b3a45;
+  overflow: hidden;
 }
 
 .monitor-roi-shelf-section .monitor-roi-minimap-wrap {
-  flex: none;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.monitor-roi-shelf-section .monitor-roi-minimap-fit {
+  container-type: size;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
 }
 
 .monitor-roi-shelf-section .monitor-roi-minimap {
+  display: grid;
+  gap: 2px;
+  padding: 4px;
+  width: min(
+    100cqw,
+    calc(100cqh * var(--minimap-cols, 1) / var(--minimap-rows, 1))
+  );
+  height: min(
+    100cqh,
+    calc(100cqw * var(--minimap-rows, 1) / var(--minimap-cols, 1))
+  );
+  max-width: 100%;
+  max-height: 100%;
+  overflow: hidden;
   flex: none;
-  max-height: 160px;
-  overflow: auto;
+  align-content: stretch;
 }
 
 .monitor-roi-shelf-list .monitor-roi-cell {
-  min-height: 18px;
+  aspect-ratio: unset;
+  min-height: 0;
+  height: 100%;
 }
 
 .monitor-roi-shelf-list .monitor-roi-cell-id {
@@ -189,39 +220,11 @@
   border-bottom: none;
 }
 
-.monitor-roi-summary {
-  margin: 0;
-  font-size: 0.72rem;
-  color: #8fa3b5;
-  line-height: 1.4;
-}
-
 .monitor-roi-shelf-head {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 6px 8px;
-}
-
-.monitor-roi-shelf-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.monitor-roi-shelf-toggle input {
-  margin: 0;
-  accent-color: #00d4aa;
-}
-
-.monitor-roi-shelf-hidden-tag {
-  font-size: 0.65rem;
-  color: #6d8496;
-  padding: 1px 6px;
-  border-radius: 4px;
-  border: 1px solid #2b3a45;
 }
 
 .monitor-roi-shelf-title {
@@ -357,6 +360,14 @@
   stroke-width: 3px;
 }
 
+.roi-skeleton-line {
+  stroke: #00e5ff;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 2px rgba(0, 229, 255, 0.85));
+}
+
 .monitor-legend {
   list-style: none;
   margin: 0;
@@ -418,7 +429,7 @@
   border-radius: 8px;
   flex: 1;
   min-height: 0;
-  align-content: start;
+  align-content: stretch;
 }
 
 .monitor-roi-cell {
@@ -486,9 +497,3 @@
   line-height: 1.45;
 }
 
-@media (max-width: 860px) {
-  .monitor-roi-minimap {
-    max-height: 160px;
-    overflow: auto;
-  }
-}

@@ -174,13 +174,27 @@ def _build_scaled_boxes(raw_boxes, ann_w: float | None, ann_h: float | None, tar
     return scaled
 
 
-def _persist_live_collisions(app_config: dict, collisions: list, alarm_collisions: list) -> None:
-    """Headless 推理时将碰撞列表写入 status 文件，供监控页轮询。"""
+def _persist_live_collisions(
+    app_config: dict,
+    collisions: list,
+    alarm_collisions: list,
+    *,
+    skeletons: list | None = None,
+    infer_width: int = 0,
+    infer_height: int = 0,
+) -> None:
+    """Headless 推理时将碰撞/骨架写入 status 文件，供监控页轮询。"""
     camera_id = os.environ.get("INFERENCE_CAMERA_ID", "").strip()
     if not camera_id:
         return
-    base_dir = str(app_config.get("paths", {}).get("base_localdata_dir", "localdata"))
-    path = os.path.join(base_dir, "inference", f"{camera_id}.status.json")
+    status_dir = os.environ.get(
+        "INFERENCE_STATUS_DIR",
+        os.path.join(
+            str(app_config.get("paths", {}).get("base_localdata_dir", "localdata")),
+            "inference",
+        ),
+    )
+    path = os.path.join(status_dir, f"{camera_id}.status.json")
     try:
         data: dict = {
             "camera_id": camera_id,
@@ -196,6 +210,13 @@ def _persist_live_collisions(app_config: dict, collisions: list, alarm_collision
                 data.update(loaded)
         data["collisions"] = list(collisions)
         data["alarm_collisions"] = list(alarm_collisions)
+        data["skeletons"] = list(skeletons) if skeletons is not None else data.get("skeletons", [])
+        if infer_width > 0 and infer_height > 0:
+            data["infer_width"] = int(infer_width)
+            data["infer_height"] = int(infer_height)
+        backend = os.environ.get("INFERENCE_BACKEND", "").strip()
+        if backend:
+            data["backend"] = backend
         data["updated_at"] = time.time()
         data["state"] = data.get("state") or "running"
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -557,15 +578,21 @@ class InferenceService:
                                 report_event_ids.append(event_id)
 
                     cached_report_event_ids = report_event_ids
-                    if is_null_ws:
-                        _persist_live_collisions(
-                            self.app_config, cached_collisions, cached_alarm_collisions
-                        )
 
                 skeletons_data = cached_skeletons_data
                 active_collisions = cached_collisions
                 alarm_collisions = cached_alarm_collisions
                 report_event_ids = cached_report_event_ids
+
+                if is_null_ws:
+                    _persist_live_collisions(
+                        self.app_config,
+                        active_collisions,
+                        alarm_collisions,
+                        skeletons=skeletons_data,
+                        infer_width=infer_w,
+                        infer_height=infer_h,
+                    )
 
                 elapsed = time.time() - start_time
                 current_fps = frame_count / elapsed if elapsed > 0 else 0

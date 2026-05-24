@@ -101,6 +101,22 @@ def path_from_url(url: str) -> str:
     return parts[-1] if parts else ""
 
 
+def cameras_needing_mediamtx_paths(cameras: List[dict]) -> List[dict]:
+    """需在 MediaMTX 上存在 path 的摄像头（托管源 + 指向本机 MTX 的 external）。"""
+    out: List[dict] = []
+    seen: set[str] = set()
+    for cam in cameras:
+        if not cam.get("enabled", True):
+            continue
+        path = str(cam.get("path") or cam.get("id") or "").strip()
+        if not path or path in seen:
+            continue
+        if is_mediamtx_managed(cam) or is_mediamtx_playback_available(cam):
+            seen.add(path)
+            out.append(cam)
+    return out
+
+
 def generate_mediamtx_yaml(cameras: List[dict]) -> str:
     lines = [
         "# 由 visual-dps 根据摄像头配置自动生成，请勿手改（可在 Dashboard 管理）",
@@ -118,17 +134,22 @@ def generate_mediamtx_yaml(cameras: List[dict]) -> str:
         "paths:",
     ]
 
-    managed = [c for c in cameras if c.get("source_type") in MANAGED_SOURCE_TYPES and c.get("enabled", True)]
-    if not managed:
-        lines.append("  # 暂无由 MediaMTX 托管的流")
+    mtx_paths = cameras_needing_mediamtx_paths(cameras)
+    if not mtx_paths:
+        lines.append("  # 暂无需要在 MediaMTX 注册的流路径")
         return "\n".join(lines) + "\n"
 
-    for cam in managed:
+    for cam in mtx_paths:
         path = str(cam.get("path") or cam.get("id") or "").strip()
         if not path:
             continue
         source_type = cam.get("source_type")
         lines.append(f"  {path}:")
+
+        if source_type == SOURCE_EXTERNAL:
+            lines.append("    source: publisher")
+            lines.append("")
+            continue
 
         if source_type == SOURCE_RTSP_PULL:
             pull_url = str(cam.get("pull_url") or "").strip()
@@ -173,6 +194,10 @@ def _v4l2_run_on_init(cam: dict) -> str:
 
 def camera_to_path_conf(cam: dict) -> dict:
     source_type = cam.get("source_type")
+    if source_type == SOURCE_EXTERNAL:
+        if is_mediamtx_playback_available(cam):
+            return {"source": "publisher"}
+        return {}
     if source_type == SOURCE_RTSP_PULL:
         return {"source": str(cam.get("pull_url") or "").strip()}
     if source_type == SOURCE_PUBLISHER:
@@ -201,11 +226,7 @@ def _mediamtx_api(method: str, path: str, body: dict | None = None) -> dict:
 
 def reload_mediamtx_runtime(cameras: List[dict]) -> dict:
     """通过 Control API 热更新托管路径；不可用时静默跳过（仍依赖配置文件热重载）。"""
-    managed = [
-        c
-        for c in cameras
-        if c.get("source_type") in MANAGED_SOURCE_TYPES and c.get("enabled", True)
-    ]
+    mtx_paths = cameras_needing_mediamtx_paths(cameras)
     if not MEDIAMTX_API_URL:
         return {"reloaded": False, "skipped": True, "reason": "api_disabled"}
 
@@ -216,7 +237,7 @@ def reload_mediamtx_runtime(cameras: List[dict]) -> dict:
             for item in listed.get("items", [])
             if item.get("name")
         }
-        desired_names = {str(c.get("path") or c.get("id") or "").strip() for c in managed}
+        desired_names = {str(c.get("path") or c.get("id") or "").strip() for c in mtx_paths}
         desired_names.discard("")
 
         for name in current_names:
@@ -227,7 +248,7 @@ def reload_mediamtx_runtime(cameras: List[dict]) -> dict:
             except urllib.error.HTTPError:
                 pass
 
-        for cam in managed:
+        for cam in mtx_paths:
             name = str(cam.get("path") or cam.get("id") or "").strip()
             if not name:
                 continue
@@ -256,18 +277,14 @@ def write_mediamtx_config(config_path: str, cameras: List[dict]) -> str:
 def sync_mediamtx_config(config_path: str, cameras: List[dict]) -> dict:
     path = write_mediamtx_config(config_path, cameras)
     reload = reload_mediamtx_runtime(cameras)
-    managed = [
-        c
-        for c in cameras
-        if c.get("source_type") in MANAGED_SOURCE_TYPES and c.get("enabled", True)
-    ]
+    mtx_paths = cameras_needing_mediamtx_paths(cameras)
     if reload.get("reloaded"):
         hint = "视频流设置已自动生效。"
     else:
         hint = "视频流配置已更新；若画面未变化，请稍候片刻。"
     return {
         "config_path": path,
-        "managed_paths": [c.get("path") or c.get("id") for c in managed],
+        "managed_paths": [c.get("path") or c.get("id") for c in mtx_paths],
         "reload": reload,
         "reload_hint": hint,
     }

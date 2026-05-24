@@ -34,7 +34,7 @@ def resolve_inference_json_rel(camera_id: str, json_dir: str = "localdata/json")
             return cam_rel
     elif os.path.isfile(cam_rel):
         return cam_rel
-    return default
+    return cam_rel
 
 
 def _docker_client():
@@ -83,7 +83,25 @@ def _map_docker_status(docker_status: str, exit_code: int | None = None) -> str:
     return "stopped"
 
 
-def get_inference_status(camera_id: str) -> dict:
+def _inference_containers_by_camera_id() -> dict[str, object]:
+    out: dict[str, object] = {}
+    try:
+        client = _docker_client()
+        for container in client.containers.list(
+            all=True, filters={"label": "visual-dps.role=inference"}
+        ):
+            labels = container.labels or {}
+            cid = str(labels.get("visual-dps.camera_id") or "").strip()
+            if cid:
+                out[cid] = container
+    except Exception:
+        pass
+    return out
+
+
+def _compose_inference_status(
+    camera_id: str, container=None, *, fetch_error_logs: bool = False
+) -> dict:
     name = container_name(camera_id)
     worker = _read_worker_status(camera_id) or {}
     base = {
@@ -95,12 +113,15 @@ def get_inference_status(camera_id: str) -> dict:
         "started_at": worker.get("started_at"),
         "updated_at": worker.get("updated_at"),
         "stream_url": worker.get("stream_url", ""),
+        "backend": worker.get("backend", ""),
     }
 
+    if container is None:
+        if worker.get("state") in ("running", "starting"):
+            base["status"] = worker.get("state", "stopped")
+        return base
+
     try:
-        client = _docker_client()
-        container = client.containers.get(name)
-        container.reload()
         exit_code = container.attrs.get("State", {}).get("ExitCode")
         mapped = _map_docker_status(container.status, exit_code)
         base.update(
@@ -114,17 +135,45 @@ def get_inference_status(camera_id: str) -> dict:
         if mapped == "running" and worker.get("state") == "running":
             base["message"] = worker.get("message") or "推理运行中"
         elif mapped == "error":
-            logs = container.logs(tail=20).decode("utf-8", errors="replace")
+            if fetch_error_logs:
+                container.logs(tail=20)
             base["message"] = "检测服务异常退出，请重试"
         return base
     except Exception as exc:
-        if "No such container" in str(exc) or "not found" in str(exc).lower():
-            if worker.get("state") in ("running", "starting"):
-                base["status"] = worker.get("state", "stopped")
-            return base
         base["status"] = "error"
         base["message"] = str(exc)
         return base
+
+
+def get_inference_status(camera_id: str) -> dict:
+    name = container_name(camera_id)
+    try:
+        client = _docker_client()
+        container = client.containers.get(name)
+        container.reload()
+        return _compose_inference_status(camera_id, container, fetch_error_logs=True)
+    except Exception as exc:
+        if "No such container" in str(exc) or "not found" in str(exc).lower():
+            return _compose_inference_status(camera_id, None)
+        out = _compose_inference_status(camera_id, None)
+        out["status"] = "error"
+        out["message"] = str(exc)
+        return out
+
+
+def attach_inference_status(cameras: list[dict]) -> list[dict]:
+    docker_map = _inference_containers_by_camera_id()
+    result = []
+    for cam in cameras:
+        cid = str(cam.get("id") or "")
+        container = docker_map.get(cid) if cid else None
+        inference = (
+            _compose_inference_status(cid, container)
+            if cid
+            else {"status": "stopped"}
+        )
+        result.append({**cam, "inference": inference})
+    return result
 
 
 def _host_bind(rel_path: str, container_subpath: str | None = None, read_only: bool = False) -> str:
@@ -270,6 +319,7 @@ def start_inference_container(camera: dict, request=None) -> dict:
                 "message": "正在启动",
                 "updated_at": time.time(),
                 "stream_url": stream_url,
+                "backend": backend,
             },
             f,
             ensure_ascii=False,
@@ -324,10 +374,3 @@ def stop_inference_container(camera_id: str, request=None) -> dict:
     return {"status": "success", "inference": get_inference_status(camera_id)}
 
 
-def attach_inference_status(cameras: list[dict]) -> list[dict]:
-    result = []
-    for cam in cameras:
-        cid = str(cam.get("id") or "")
-        item = {**cam, "inference": get_inference_status(cid) if cid else {"status": "stopped"}}
-        result.append(item)
-    return result

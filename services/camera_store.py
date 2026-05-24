@@ -4,6 +4,7 @@ import json
 import os
 import re
 from typing import List
+from urllib.parse import urlparse
 
 from services.runtime_config_service import normalize_camera_settings
 from services.mediamtx_service import (
@@ -17,6 +18,24 @@ from services.mediamtx_service import (
 )
 
 _PATH_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def _validate_stream_url(url: str) -> str | None:
+    parsed = urlparse(str(url or "").strip())
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("rtsp", "rtsps", "http", "https"):
+        return "视频流地址需以 rtsp://、rtsps://、http:// 或 https:// 开头"
+    host = (parsed.hostname or "").strip()
+    if not host:
+        return "视频流地址无效：缺少主机名"
+    if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+        try:
+            octets = [int(x) for x in host.split(".")]
+        except ValueError:
+            return "IP 地址格式无效"
+        if len(octets) != 4 or any(o < 0 or o > 255 for o in octets):
+            return "IP 地址无效（每段应为 0–255）"
+    return None
 
 
 def _normalize_record(raw: dict) -> dict | None:
@@ -60,9 +79,10 @@ def _normalize_record(raw: dict) -> dict | None:
         "video_size": str(raw.get("video_size") or "640x480").strip(),
         "framerate": int(raw.get("framerate") or 15),
     }
-    settings = normalize_camera_settings(raw.get("settings"))
-    if settings:
-        record["settings"] = settings
+    if "settings" in raw:
+        settings = normalize_camera_settings(raw.get("settings"))
+        if settings:
+            record["settings"] = settings
     return record
 
 
@@ -133,6 +153,9 @@ def validate_camera_payload(data: dict, existing_id: str | None = None) -> tuple
     if source_type == SOURCE_EXTERNAL:
         if not url:
             return None, "请填写完整的视频流地址"
+        url_err = _validate_stream_url(url)
+        if url_err:
+            return None, url_err
     elif source_type == SOURCE_RTSP_PULL:
         if not pull_url:
             return None, "请填写上游视频流地址"
@@ -162,9 +185,7 @@ def validate_camera_payload(data: dict, existing_id: str | None = None) -> tuple
         "framerate": data.get("framerate") or 15,
     }
     if "settings" in data:
-        settings = normalize_camera_settings(data.get("settings"))
-        if settings:
-            raw_rec["settings"] = settings
+        raw_rec["settings"] = normalize_camera_settings(data.get("settings"))
     rec = _normalize_record(raw_rec)
     if not rec:
         return None, "配置无效"

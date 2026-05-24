@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import AnnotateControls from '../components/AnnotateControls';
 import InferenceToggle from '../components/InferenceToggle';
@@ -9,16 +9,16 @@ import { useAnnotateTool } from '../features/annotate/useAnnotateTool';
 import { boxRoiKey, parseAnnotationPayload } from '../lib/annotation';
 import { getPerspectiveTransform, perspectiveTransform } from '../lib/geometry';
 import { apiGet, apiPost, cameraPlaybackUrl } from '../api/client';
-import { backendLabel } from '../lib/cameraSettings';
+import { resolveCameraModelLabel } from '../lib/cameraSettings';
 import { formatInferenceMessage, formatUserError } from '../lib/userFacingText';
 import './MonitorPage.css';
 
-const INFER_LABEL = {
-  stopped: '检测未启动',
-  running: '检测运行中',
-  starting: '检测启动中',
-  error: '检测异常',
-  paused: '检测已暂停',
+const EMPTY_ANNOTATION = {
+  boxes: [],
+  shelves: [],
+  shelfCorners: [],
+  annotationSize: null,
+  gridShape: [],
 };
 
 const MAP_W = 600;
@@ -66,12 +66,17 @@ export default function MonitorPage() {
   });
   const [liveHits, setLiveHits] = useState([]);
   const [liveAlarms, setLiveAlarms] = useState([]);
+  const [liveSkeletons, setLiveSkeletons] = useState([]);
+  const [liveInferSize, setLiveInferSize] = useState({ w: 0, h: 0 });
+  const [showSkeletonLayer, setShowSkeletonLayer] = useState(true);
+  const [showRoiLayer, setShowRoiLayer] = useState(true);
   const [playback, setPlayback] = useState(null);
   const [inferLoading, setInferLoading] = useState(false);
   const [shelfDrawerOpen, setShelfDrawerOpen] = useState(false);
   const [shelfDrawerForm, setShelfDrawerForm] = useState(emptyShelfForm);
   const [shelfDrawerSaving, setShelfDrawerSaving] = useState(false);
   const annotateCanvasRef = useRef(null);
+  const applyAnnotationPayloadRef = useRef(() => false);
   const annotateTool = useAnnotateTool(annotateCanvasRef, {
     fixedCamera: monitorCamera
       ? { id: monitorCamera.id, name: monitorCamera.name, url: monitorCamera.url }
@@ -80,6 +85,7 @@ export default function MonitorPage() {
     streamOverlay: true,
     canvasActive: viewMode === 'annotate',
   });
+  applyAnnotationPayloadRef.current = annotateTool.applyAnnotationPayload;
   const [status, setStatus] = useState({
     title: '🟡 步骤 1：准备就绪',
     desc: '请先上传视频并完成货架网格标注，保存后再启动智能检测。',
@@ -537,7 +543,12 @@ export default function MonitorPage() {
 
     (async () => {
       try {
-        const data = await apiGet(`/api/cameras/${encodeURIComponent(cameraId)}`);
+        const camPath = `/api/cameras/${encodeURIComponent(cameraId)}?settings=0`;
+        const annPath = `/api/cameras/${encodeURIComponent(cameraId)}/annotation`;
+        const [data, annRes] = await Promise.all([
+          apiGet(camPath),
+          apiGet(annPath).catch(() => null),
+        ]);
         if (cancelled) return;
         if (data.error || !data.camera) {
           setUIStatus('未找到摄像头', formatUserError(data.error) || '请从总览重新进入', '#e74c3c');
@@ -545,21 +556,21 @@ export default function MonitorPage() {
           setCameraLoadState('error');
           return;
         }
-        let cam = data.camera;
-        try {
-          const inf = await apiGet(`/api/cameras/${encodeURIComponent(cameraId)}/inference`);
-          if (inf.inference) cam = { ...cam, inference: inf.inference };
-        } catch {
-          /* ignore */
+        setMonitorCamera(data.camera);
+        if (annRes?.status === 'success') {
+          setAnnotation(parseAnnotationPayload(annRes));
+          applyAnnotationPayloadRef.current(annRes, { silent: true });
+        } else {
+          setAnnotation(EMPTY_ANNOTATION);
         }
-        setMonitorCamera(cam);
         setCameraLoadState('ready');
-        try {
-          const pb = await apiGet(cameraPlaybackUrl(cameraId));
-          if (!cancelled && pb.status === 'success') setPlayback(pb);
-        } catch {
-          if (!cancelled) setPlayback(null);
-        }
+        apiGet(cameraPlaybackUrl(cameraId))
+          .then((pb) => {
+            if (!cancelled && pb?.status === 'success') setPlayback(pb);
+          })
+          .catch(() => {
+            if (!cancelled) setPlayback(null);
+          });
       } catch (e) {
         if (!cancelled) {
           setUIStatus('加载失败', formatUserError(e.message) || '无法加载摄像头', '#e74c3c');
@@ -577,7 +588,7 @@ export default function MonitorPage() {
   const refreshCameraMeta = useCallback(async () => {
     if (!cameraId) return;
     try {
-      const data = await apiGet(`/api/cameras/${encodeURIComponent(cameraId)}`);
+      const data = await apiGet(`/api/cameras/${encodeURIComponent(cameraId)}?settings=0`);
       if (data.error || !data.camera) return;
       setMonitorCamera((prev) => ({ ...prev, ...data.camera }));
     } catch {
@@ -613,31 +624,30 @@ export default function MonitorPage() {
     if (!cameraId) return;
     try {
       const res = await apiGet(`/api/cameras/${encodeURIComponent(cameraId)}/annotation`);
-      if (res.status === 'success' || res.data) {
+      if (res.status === 'success') {
         setAnnotation(parseAnnotationPayload(res));
+        applyAnnotationPayloadRef.current(res, { silent: true });
+      } else {
+        setAnnotation(EMPTY_ANNOTATION);
       }
     } catch {
-      /* 无标注时保持空列表 */
+      setAnnotation(EMPTY_ANNOTATION);
     }
   }, [cameraId]);
 
   const switchViewMode = useCallback(
     async (mode) => {
       if (viewMode === 'annotate' && mode === 'monitor') {
-        const result = await annotateTool.saveAllAnnotations({ silent: true });
-        if (result?.ok) await loadAnnotation();
+        await annotateTool.flushAutoSave();
+        await loadAnnotation();
       }
       setViewMode(mode);
-      if (mode === 'annotate') loadAnnotation();
     },
     [viewMode, annotateTool, loadAnnotation, setViewMode],
   );
 
   useEffect(() => {
-    if (!cameraId) {
-      setAnnotation({ boxes: [], shelves: [], shelfCorners: [], annotationSize: null, gridShape: [] });
-      return;
-    }
+    if (!cameraId || viewMode !== 'annotate') return;
     loadAnnotation();
   }, [cameraId, viewMode, loadAnnotation]);
 
@@ -685,6 +695,8 @@ export default function MonitorPage() {
     if (!running) {
       setLiveHits([]);
       setLiveAlarms([]);
+      setLiveSkeletons([]);
+      setLiveInferSize({ w: 0, h: 0 });
       return undefined;
     }
 
@@ -694,6 +706,11 @@ export default function MonitorPage() {
         if (data.status === 'success') {
           setLiveHits(Array.isArray(data.collisions) ? data.collisions : []);
           setLiveAlarms(Array.isArray(data.alarm_collisions) ? data.alarm_collisions : []);
+          setLiveSkeletons(Array.isArray(data.skeletons) ? data.skeletons : []);
+          setLiveInferSize({
+            w: Number(data.infer_width) || 0,
+            h: Number(data.infer_height) || 0,
+          });
         }
       } catch {
         /* ignore */
@@ -701,7 +718,7 @@ export default function MonitorPage() {
     };
 
     pollLive();
-    const timer = setInterval(pollLive, 2000);
+    const timer = setInterval(pollLive, 1000);
     return () => clearInterval(timer);
   }, [cameraId, viewMode, monitorCamera?.inference?.status]);
 
@@ -745,11 +762,7 @@ export default function MonitorPage() {
 
   const inferStatus = monitorCamera?.inference?.status || 'stopped';
   const inferRunning = inferStatus === 'running' || inferStatus === 'starting';
-
-  const monitorShelfList = useMemo(() => {
-    if (annotation.shelves.length > 0) return annotation.shelves;
-    return annotateTool.shelves;
-  }, [annotation.shelves, annotateTool.shelves]);
+  const modelLabel = resolveCameraModelLabel(monitorCamera);
 
   if (!cameraId) {
     return <Navigate to="/" replace />;
@@ -765,21 +778,47 @@ export default function MonitorPage() {
               <span className={monitorCamera.online ? 'chip chip-ok' : 'chip chip-muted'}>
                 {monitorCamera.online ? '在线' : '离线'}
               </span>
-              <span className="chip chip-muted" title="当前生效的推理模型">
-                模型 {backendLabel(monitorCamera.effective_settings?.['models.backend'])}
-              </span>
               <InferenceToggle
                 on={inferRunning}
                 loading={inferLoading}
                 disabled={inferLoading || inferStatus === 'starting'}
-                label={INFER_LABEL[inferStatus] || inferStatus}
-                statusClass={`infer-status-${inferStatus}`}
+                label={modelLabel}
                 title={
                   formatInferenceMessage(monitorCamera.inference?.message) ||
-                  (inferRunning ? '关闭智能检测' : '开启智能检测')
+                  (inferRunning ? `关闭 ${modelLabel} 检测` : `开启 ${modelLabel} 检测`)
                 }
                 onToggle={handleInferToggle}
               />
+              {viewMode === 'monitor' ? (
+                <div className="monitor-header-layers" role="group" aria-label="画面叠加层">
+                  <label
+                    className={`monitor-layer-switch${showSkeletonLayer ? ' on' : ''}`}
+                    title="动作追踪（骨架）"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={showSkeletonLayer}
+                      onChange={(e) => setShowSkeletonLayer(e.target.checked)}
+                      aria-label="动作追踪（骨架）"
+                    />
+                    <span className="monitor-layer-switch-track" aria-hidden />
+                    <span className="monitor-layer-switch-label">骨架</span>
+                  </label>
+                  <label
+                    className={`monitor-layer-switch${showRoiLayer ? ' on' : ''}`}
+                    title="区域层（ROI）"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={showRoiLayer}
+                      onChange={(e) => setShowRoiLayer(e.target.checked)}
+                      aria-label="区域层（ROI）"
+                    />
+                    <span className="monitor-layer-switch-track" aria-hidden />
+                    <span className="monitor-layer-switch-label">ROI</span>
+                  </label>
+                </div>
+              ) : null}
             </div>
             <div className="monitor-view-switch" role="tablist" aria-label="查看模式">
               <button
@@ -834,6 +873,11 @@ export default function MonitorPage() {
           inferRunning={inferRunning}
           hits={liveHits}
           alarms={liveAlarms}
+          liveSkeletons={liveSkeletons}
+          liveInferWidth={liveInferSize.w}
+          liveInferHeight={liveInferSize.h}
+          showSkeletonLayer={showSkeletonLayer}
+          showRoiLayer={showRoiLayer}
           annotateMode={viewMode === 'annotate'}
           annotateCanvasRef={annotateCanvasRef}
           onFrameSize={handlePreviewFrameSize}
@@ -850,7 +894,7 @@ export default function MonitorPage() {
                 onDelete={annotateTool.deleteSelectedShelf}
               />
             ) : (
-              <ShelfBar readOnly shelves={monitorShelfList} />
+              <ShelfBar readOnly shelves={annotation.shelves} />
             )
           }
         />

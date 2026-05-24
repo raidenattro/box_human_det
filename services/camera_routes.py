@@ -43,6 +43,7 @@ from core.config import try_load_app_config
 from services.annotation_service import (
     annotation_payload_for_api,
     load_camera_annotation,
+    materialize_camera_annotation,
     save_camera_annotation,
 )
 from services.runtime_config_service import get_camera_settings_payload
@@ -65,7 +66,7 @@ def register_camera_routes(
         return {"status": "success", "items": items}
 
     @router.get("/cameras/{camera_id}")
-    async def read_camera(camera_id: str):
+    async def read_camera(camera_id: str, probe: bool = False, settings: bool = True):
         found = get_camera(camera_ips_file, camera_id)
         if found.get("error"):
             return found
@@ -73,7 +74,7 @@ def register_camera_routes(
         url = str(cam.get("url") or "").strip()
         cid = stable_camera_id(cam)
         if url:
-            st = get_camera_status(url, force_probe=True)
+            st = get_camera_status(url, force_probe=probe, camera_id=cid)
             cam["online"] = st["online"]
             cam["activity_seconds"] = st.get("activity_seconds", 0)
         else:
@@ -91,15 +92,19 @@ def register_camera_routes(
 
         enriched = attach_inference_status([cam])
         cam_out = enriched[0]
-        settings_payload = get_camera_settings_payload(try_load_app_config(), cam_out)
-        cam_out["settings"] = settings_payload["settings"]
-        cam_out["effective_settings"] = settings_payload["effective_settings"]
-        cam_out["global_defaults"] = settings_payload["global_defaults"]
+        if settings:
+            settings_payload = get_camera_settings_payload(try_load_app_config(), cam_out)
+            cam_out["settings"] = settings_payload["settings"]
+            cam_out["effective_settings"] = settings_payload["effective_settings"]
+            cam_out["global_defaults"] = settings_payload["global_defaults"]
         return {"status": "success", "camera": cam_out}
 
     @router.post("/cameras")
     async def create_camera_api(data: dict, request: Request):
         result = create_camera(camera_ips_file, mediamtx_config_path, data)
+        if result.get("status") == "success" and result.get("camera"):
+            cam = result["camera"]
+            materialize_camera_annotation(cam.get("id") or cam.get("path"), json_dir, camera=cam)
         audit_from_result(request, "camera.create", "camera", data.get("path") or data.get("id", ""), result)
         return result
 
@@ -126,6 +131,18 @@ def register_camera_routes(
             default_json_file,
             camera=found["camera"],
         )
+        if result.get("error") == "annotation not found":
+            materialize_camera_annotation(camera_id, json_dir, camera=found["camera"])
+            result = load_camera_annotation(
+                camera_id,
+                json_dir,
+                default_json_file,
+                camera=found["camera"],
+            )
+        if result.get("status") == "success":
+            from core.state import STATE
+
+            STATE.json_path = str(result.get("json_path") or "")
         return annotation_payload_for_api(result)
 
     @router.post("/cameras/{camera_id}/annotation")
@@ -147,17 +164,26 @@ def register_camera_routes(
         path = os.path.join(INFERENCE_STATUS_DIR, f"{camera_id}.status.json")
         collisions = []
         alarm_collisions = []
+        skeletons = []
+        infer_width = 0
+        infer_height = 0
         if os.path.isfile(path):
             try:
                 data = json.loads(open(path, "r", encoding="utf-8").read())
                 collisions = data.get("collisions") or []
                 alarm_collisions = data.get("alarm_collisions") or []
+                skeletons = data.get("skeletons") or []
+                infer_width = int(data.get("infer_width") or 0)
+                infer_height = int(data.get("infer_height") or 0)
             except (json.JSONDecodeError, OSError):
                 pass
         return {
             "status": "success",
             "collisions": collisions,
             "alarm_collisions": alarm_collisions,
+            "skeletons": skeletons,
+            "infer_width": infer_width,
+            "infer_height": infer_height,
         }
 
     @router.post("/cameras/{camera_id}/inference/start")

@@ -65,6 +65,36 @@ def _find_latest_annotation_for_camera(json_dir: str, camera: dict, camera_id: s
     return best_path
 
 
+def _empty_annotation_template(camera: dict, camera_id: str) -> dict:
+    cam = camera if isinstance(camera, dict) else {}
+    return {
+        "annotation_size": {"width": 0, "height": 0},
+        "source_info": {
+            "capture_source": "camera",
+            "camera_url": str(cam.get("url") or "").strip(),
+            "camera_name": str(cam.get("name") or camera_id or "").strip(),
+        },
+        "shelves": [],
+    }
+
+
+def materialize_camera_annotation(
+    camera_id: str,
+    json_dir: str,
+    camera: dict | None = None,
+) -> str:
+    """为摄像头创建空的 per-camera 标注文件（若尚不存在）。"""
+    cid = str(camera_id or "").strip()
+    if not cid:
+        return ""
+    stable_path = camera_annotation_path(json_dir, cid)
+    if os.path.isfile(stable_path):
+        return stable_path
+    cam = camera if isinstance(camera, dict) else {}
+    save_camera_annotation(_empty_annotation_template(cam, cid), cid, json_dir)
+    return stable_path
+
+
 def ensure_camera_annotation_file(
     camera_id: str,
     json_dir: str,
@@ -88,9 +118,7 @@ def ensure_camera_annotation_file(
             save_camera_annotation(data, cid, json_dir)
             return stable_path
 
-    if os.path.isfile(default_json_file):
-        return default_json_file
-    return stable_path
+    return materialize_camera_annotation(cid, json_dir, cam)
 
 
 def save_camera_annotation(data: dict, camera_id: str, json_dir: str) -> dict:
@@ -123,7 +151,11 @@ def load_camera_annotation(camera_id: str, json_dir: str, default_json_file: str
         if isinstance(data, dict):
             return {"status": "success", "data": data, "json_path": legacy_path, "camera_id": cid}
 
-    return load_annotation(default_json_file, json_dir)
+    return {
+        "error": "annotation not found",
+        "json_path": stable_path,
+        "camera_id": cid,
+    }
 
 
 def annotation_payload_for_api(load_result: dict) -> dict:

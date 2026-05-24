@@ -1,20 +1,11 @@
 import InferenceToggle from './InferenceToggle';
 import { CAMERA_OVERRIDE_FIELDS, formatSettingDisplayValue } from '../lib/cameraSettings';
-import { formatInferenceMessage } from '../lib/userFacingText';
 import { formatDuration, thumbnailUrl } from '../api/client';
 import './CameraSetupDrawer.css';
 
-const INFER_LABEL = {
-  stopped: '未启动',
-  running: '运行中',
-  starting: '启动中',
-  error: '异常',
-  paused: '暂停',
-};
-
-function DetailRow({ label, value, mono }) {
+function DetailRow({ label, value, mono, title }) {
   return (
-    <div className="detail-row">
+    <div className="detail-row" title={title}>
       <span className="detail-label">{label}</span>
       <span className={`detail-value ${mono ? 'mono' : ''}`}>{value ?? '—'}</span>
     </div>
@@ -27,6 +18,7 @@ export default function CameraSetupDrawer({
   camera,
   form,
   globalDefaults = {},
+  effectiveSettings = {},
   onChange,
   onClose,
   onSave,
@@ -41,8 +33,8 @@ export default function CameraSetupDrawer({
   const isCreate = mode === 'create';
   const infer = camera?.inference;
   const inferStatus = infer?.status || 'stopped';
-  const inferDetail = formatInferenceMessage(infer?.message);
   const settings = form.settings || {};
+  const inferOn = inferStatus === 'running' || inferStatus === 'starting';
 
   const setSettings = (next) => onChange('settings', next);
 
@@ -97,19 +89,6 @@ export default function CameraSetupDrawer({
                 <h3>实时状态</h3>
                 <div className="drawer-preview">
                   <div className="drawer-preview-actions">
-                    <div className="drawer-preview-tool" title="智能检测">
-                      <InferenceToggle
-                        on={inferStatus === 'running' || inferStatus === 'starting'}
-                        loading={actionLoading}
-                        disabled={actionLoading}
-                        title={
-                          inferStatus === 'running' || inferStatus === 'starting'
-                            ? '关闭智能检测'
-                            : '开启智能检测'
-                        }
-                        onToggle={onToggleInference}
-                      />
-                    </div>
                     <button
                       type="button"
                       className="drawer-preview-capture"
@@ -130,9 +109,23 @@ export default function CameraSetupDrawer({
                   label="在线"
                   value={camera.online ? '在线' : '离线'}
                 />
-                <DetailRow label="活动时长" value={formatDuration(camera._displayActivity ?? camera.activity_seconds)} />
-                <DetailRow label="智能检测" value={INFER_LABEL[inferStatus] || inferStatus} />
-                {inferDetail && <DetailRow label="说明" value={inferDetail} />}
+                <DetailRow
+                  label="本次在线"
+                  value={formatDuration(camera._displayActivity ?? camera.activity_seconds)}
+                  title="自本次检测到在线起累计，离线后清零（非历史总时长）"
+                />
+                <div className="detail-row detail-row--switch">
+                  <span className="detail-label">智能检测</span>
+                  <div className="detail-row-control">
+                    <InferenceToggle
+                      on={inferOn}
+                      loading={actionLoading}
+                      disabled={actionLoading}
+                      title={inferOn ? '关闭智能检测' : '开启智能检测'}
+                      onToggle={onToggleInference}
+                    />
+                  </div>
+                </div>
               </section>
             </>
           )}
@@ -174,14 +167,18 @@ export default function CameraSetupDrawer({
                   required
                 />
               </label>
-              <label className="checkbox-row">
-                <input
-                  type="checkbox"
-                  checked={form.enabled}
-                  onChange={(e) => onChange('enabled', e.target.checked)}
-                />
-                启用该路摄像头
-              </label>
+              <div className="drawer-form-row drawer-form-row--switch">
+                <span className="drawer-form-row-label">启用该路摄像头</span>
+                <label className="drawer-inline-switch">
+                  <input
+                    type="checkbox"
+                    className="drawer-inline-switch-input"
+                    checked={form.enabled}
+                    onChange={(e) => onChange('enabled', e.target.checked)}
+                  />
+                  <span className="drawer-inline-switch-track" aria-hidden />
+                </label>
+              </div>
             </form>
             <p className="drawer-hint">
               填写摄像头或录像机提供的 RTSP 地址，系统将直接拉流，无需向本系统推流。
@@ -201,7 +198,9 @@ export default function CameraSetupDrawer({
                   const customized = Object.prototype.hasOwnProperty.call(settings, field.key);
                   const globalVal = globalDefaults[field.key];
                   const displayGlobal = formatSettingDisplayValue(field, globalVal);
-                  const currentVal = customized ? settings[field.key] : globalVal;
+                  const currentVal = customized
+                    ? (settings[field.key] ?? effectiveSettings[field.key] ?? globalVal)
+                    : globalVal;
                   const isWide = field.type === 'select' || Boolean(field.hint);
                   return (
                     <div
@@ -239,7 +238,7 @@ export default function CameraSetupDrawer({
                           <select
                             className="drawer-param-input"
                             disabled={!customized}
-                            value={currentVal ?? field.options[0]?.value ?? ''}
+                            value={String(currentVal ?? field.options[0]?.value ?? '')}
                             onChange={(e) => setOverrideValue(field.key, e.target.value)}
                           >
                             {field.options.map((opt) => (

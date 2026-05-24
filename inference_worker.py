@@ -39,7 +39,14 @@ def _status_path(base_dir: str, camera_id: str) -> str:
     return os.path.join(base_dir, "inference", f"{camera_id}.status.json")
 
 
-_STATUS_PRESERVE_KEYS = ("collisions", "alarm_collisions")
+_STATUS_PRESERVE_KEYS = (
+    "collisions",
+    "alarm_collisions",
+    "backend",
+    "skeletons",
+    "infer_width",
+    "infer_height",
+)
 
 
 def write_status(base_dir: str, camera_id: str, state: str, message: str = "", extra: dict | None = None):

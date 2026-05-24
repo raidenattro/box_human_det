@@ -422,6 +422,7 @@ export default function DashboardPage() {
         form={form}
         onChange={onFormChange}
         globalDefaults={globalSettings}
+        effectiveSettings={drawerCamera?.effective_settings || {}}
         onClose={closeDrawer}
         onSave={saveFromDrawer}
         onDelete={deleteFromDrawer}

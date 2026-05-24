@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
 import cv2
@@ -13,6 +14,12 @@ from services.video_service import read_non_black_frame, resize_frame_to_height
 
 RTSP_HOST_REWRITE = os.environ.get("RTSP_HOST_REWRITE", "")
 PROBE_TTL_SEC = max(5, int(os.environ.get("CAMERA_PROBE_TTL", "20")))
+PROBE_MAX_READS = max(1, int(os.environ.get("CAMERA_PROBE_MAX_READS", "2")))
+PROBE_MAX_WORKERS = max(1, int(os.environ.get("CAMERA_PROBE_MAX_WORKERS", "8")))
+_FFMPEG_CAPTURE_OPTS = os.environ.get(
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+    "rtsp_transport;tcp|stimeout;3000000|max_delay;500000",
+)
 
 _camera_runtime: dict = {}
 
@@ -66,20 +73,28 @@ def save_last_frame(last_frame_file: str, frame):
     cv2.imwrite(last_frame_file, frame)
 
 
-def probe_camera_online(url: str, max_reads: int = 8) -> bool:
+def probe_camera_online(url: str, max_reads: int | None = None) -> bool:
     stream_url = normalize_rtsp_url(url)
-    cap = cv2.VideoCapture(stream_url)
-    if not cap.isOpened():
-        cap.release()
+    reads = PROBE_MAX_READS if max_reads is None else max_reads
+    prev_opts = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS")
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = _FFMPEG_CAPTURE_OPTS
+    cap = None
+    try:
+        cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+        if not cap.isOpened():
+            return False
+        for _ in range(reads):
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                return True
         return False
-    online = False
-    for _ in range(max_reads):
-        ok, frame = cap.read()
-        if ok and frame is not None:
-            online = True
-            break
-    cap.release()
-    return online
+    finally:
+        if cap is not None:
+            cap.release()
+        if prev_opts is None:
+            os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+        else:
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = prev_opts
 
 
 def _update_runtime_status(camera_id: str, online: bool) -> dict:
@@ -101,42 +116,81 @@ def _update_runtime_status(camera_id: str, online: bool) -> dict:
     return {"online": online, "activity_seconds": activity_seconds, "last_check": now}
 
 
-def get_camera_status(url: str, *, force_probe: bool = False) -> dict:
-    camera_id = camera_id_from_url(url.strip())
+def _cached_camera_status(cid: str) -> dict | None:
     now = time.time()
-    state = _camera_runtime.get(camera_id)
-    if (
-        not force_probe
-        and state
-        and state.get("last_check")
-        and (now - float(state["last_check"])) < PROBE_TTL_SEC
-    ):
-        online = bool(state.get("online"))
-        activity_seconds = 0
-        if online and state.get("online_since"):
-            activity_seconds = int(now - state["online_since"])
-        return {
-            "id": camera_id,
-            "online": online,
-            "activity_seconds": activity_seconds,
-            "last_check": state["last_check"],
-        }
+    state = _camera_runtime.get(cid)
+    if not state or not state.get("last_check"):
+        return None
+    if (now - float(state["last_check"])) >= PROBE_TTL_SEC:
+        return None
+    online = bool(state.get("online"))
+    activity_seconds = 0
+    if online and state.get("online_since"):
+        activity_seconds = int(now - state["online_since"])
+    return {
+        "id": cid,
+        "online": online,
+        "activity_seconds": activity_seconds,
+        "last_check": state["last_check"],
+    }
+
+
+def get_camera_status(url: str, *, force_probe: bool = False, camera_id: str | None = None) -> dict:
+    cid = str(camera_id or "").strip() or camera_id_from_url(url.strip())
+    if not force_probe:
+        cached = _cached_camera_status(cid)
+        if cached:
+            return cached
 
     online = probe_camera_online(url)
-    status = _update_runtime_status(camera_id, online)
-    status["id"] = camera_id
+    status = _update_runtime_status(cid, online)
+    status["id"] = cid
     return status
+
+
+def _probe_cameras_parallel(pending: list[tuple[int, str, str]]) -> dict[int, dict]:
+    if not pending:
+        return {}
+    statuses: dict[int, dict] = {}
+    workers = min(PROBE_MAX_WORKERS, len(pending))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_map = {
+            pool.submit(probe_camera_online, url): (index, cid, url) for index, url, cid in pending
+        }
+        for future in as_completed(future_map):
+            index, cid, url = future_map[future]
+            try:
+                online = future.result()
+            except Exception:
+                online = False
+            status = _update_runtime_status(cid, online)
+            status["id"] = cid
+            statuses[index] = status
+    return statuses
 
 
 def list_cameras_with_status(camera_ips_file: str, frames_dir: str, with_inference: bool = True) -> List[dict]:
     from services.camera_store import load_cameras
 
     items = load_cameras(camera_ips_file)
-    result = []
-    for item in items:
+    pending: list[tuple[int, str, str]] = []
+    status_by_index: dict[int, dict] = {}
+
+    for index, item in enumerate(items):
         url = item["url"]
         cid = stable_camera_id(item)
-        status = get_camera_status(url)
+        cached = _cached_camera_status(cid)
+        if cached:
+            status_by_index[index] = cached
+        else:
+            pending.append((index, url, cid))
+
+    status_by_index.update(_probe_cameras_parallel(pending))
+
+    result = []
+    for index, item in enumerate(items):
+        cid = stable_camera_id(item)
+        status = status_by_index[index]
         thumb_path = camera_thumbnail_path(frames_dir, cid)
         last_frame_at = os.path.getmtime(thumb_path) if os.path.exists(thumb_path) else None
         result.append(

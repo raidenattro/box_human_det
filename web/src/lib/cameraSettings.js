@@ -43,3 +43,11 @@ export function backendLabel(value) {
     value,
   );
 }
+
+/** 监控页展示：优先用推理容器实际 backend，其次摄像头 effective_settings */
+export function resolveCameraModelLabel(camera) {
+  if (!camera) return '—';
+  const backend =
+    camera.inference?.backend || camera.effective_settings?.['models.backend'];
+  return backendLabel(backend);
+}

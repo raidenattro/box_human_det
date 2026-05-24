@@ -54,6 +54,77 @@
   border-radius: 6px;
 }
 
+.monitor-header-layers {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.monitor-layer-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px 0 4px;
+  box-sizing: border-box;
+  border-radius: 6px;
+  border: 1px solid #2b3a45;
+  background: #141c22;
+  cursor: pointer;
+  user-select: none;
+}
+
+.monitor-layer-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.monitor-layer-switch-track {
+  position: relative;
+  display: block;
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  background: #3a4f5f;
+  border: 1px solid #4a6275;
+  flex-shrink: 0;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.monitor-layer-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #9ab1c4;
+  transition: transform 0.2s, background 0.2s;
+}
+
+.monitor-layer-switch.on .monitor-layer-switch-track {
+  background: #1e4d3a;
+  border-color: #2a6b4a;
+}
+
+.monitor-layer-switch.on .monitor-layer-switch-track::after {
+  transform: translateX(14px);
+  background: #5dffa8;
+}
+
+.monitor-layer-switch-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #8fa3b5;
+}
+
+.monitor-layer-switch.on .monitor-layer-switch-label {
+  color: #c5d4e0;
+}
+
 .monitor-chips .chip-ok {
   color: #2ecc71;
   border-color: #1e4d3a;

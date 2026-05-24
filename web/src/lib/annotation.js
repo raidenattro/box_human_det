@@ -109,7 +109,7 @@ export function parseAnnotationPayload(payload) {
   const config = payload.data || payload;
   let shelves = parseAnnotationShelves(config, payload);
 
-  const boxes =
+  let boxes =
     Array.isArray(payload.boxes) && payload.boxes.length
       ? payload.boxes.map((b) => ({
           ...b,
