@@ -1,4 +1,4 @@
-"""可插拔推理后端：mmpose（默认）| mediapipe（轻量本地测试）。"""
+"""可插拔推理后端：mmpose | mediapipe | rtmpose_onnx（RTMPose-t CPU）。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import os
 
 BACKEND_MMPose = "mmpose"
 BACKEND_MEDIAPIPE = "mediapipe"
+BACKEND_RTMPOSE_ONNX = "rtmpose_onnx"
+_LITE_BACKENDS = frozenset({BACKEND_MEDIAPIPE, BACKEND_RTMPOSE_ONNX})
 _ALIASES = {
     "lite": BACKEND_MEDIAPIPE,
     "mp": BACKEND_MEDIAPIPE,
@@ -13,6 +15,11 @@ _ALIASES = {
     "mmpose": BACKEND_MMPose,
     "mm": BACKEND_MMPose,
     "default": BACKEND_MMPose,
+    "rtmpose_onnx": BACKEND_RTMPOSE_ONNX,
+    "rtmpose-t": BACKEND_RTMPOSE_ONNX,
+    "rtmpose_t": BACKEND_RTMPOSE_ONNX,
+    "rtmpose-cpu": BACKEND_RTMPOSE_ONNX,
+    "rtmpose_cpu": BACKEND_RTMPOSE_ONNX,
 }
 
 
@@ -27,7 +34,7 @@ def resolve_backend_name(
         if not key:
             return None
         name = _ALIASES.get(key, key)
-        if name in (BACKEND_MMPose, BACKEND_MEDIAPIPE):
+        if name in (BACKEND_MMPose, BACKEND_MEDIAPIPE, BACKEND_RTMPOSE_ONNX):
             return name
         return None
 
@@ -56,8 +63,12 @@ def create_inference_backend(app_config: dict, executor):
         from services.inference_backends.mediapipe_backend import MediaPipeBackend
 
         return MediaPipeBackend(app_config, executor)
+    if name == BACKEND_RTMPOSE_ONNX:
+        from services.inference_backends.rtmpose_onnx_backend import RTMPoseOnnxBackend
+
+        return RTMPoseOnnxBackend(app_config, executor)
     if name != BACKEND_MMPose:
-        raise RuntimeError(f"未知推理后端: {name}，可选 mmpose | mediapipe")
+        raise RuntimeError(f"未知推理后端: {name}，可选 mmpose | mediapipe | rtmpose_onnx")
     from services.inference_backends.mmpose_backend import MMPoseBackend
 
     return MMPoseBackend(app_config, executor)

@@ -55,7 +55,7 @@ function ShelfMatrix({ shelf, cameraId }) {
       </div>
       <div
         className="matrix-grid"
-        style={{ gridTemplateColumns: `repeat(${cols}, minmax(28px, 1fr))` }}
+        style={{ gridTemplateColumns: `repeat(${cols}, minmax(18px, 1fr))` }}
         role="grid"
         aria-label={`货架 ${shelf.shelf_code}`}
       >
@@ -88,12 +88,8 @@ function MatrixCell({ cell, cameraId, compact = false }) {
     ? `${cell.roi_key || cell.box_id} · ${meta.label}`
     : `L${cell.layer} C${cell.column}`;
 
-  const inner = (
-    <>
-      {!compact && cell.box_id ? <span className="matrix-cell-id">{cell.box_id}</span> : null}
-      <span className="matrix-cell-state">{meta.label}</span>
-    </>
-  );
+  const code = cell.box_id || cell.roi_key || null;
+  const inner = code ? <span className="matrix-cell-id">{code}</span> : null;
 
   if (!hasBox) {
     return (
@@ -101,9 +97,8 @@ function MatrixCell({ cell, cameraId, compact = false }) {
         className={`matrix-cell ${meta.className}${compact ? ' matrix-cell--compact' : ''}`}
         title={title}
         role="gridcell"
-      >
-        {compact ? meta.label : null}
-      </div>
+        aria-label={meta.label}
+      />
     );
   }
 
@@ -113,6 +108,7 @@ function MatrixCell({ cell, cameraId, compact = false }) {
       className={`matrix-cell ${meta.className}${compact ? ' matrix-cell--compact' : ''}`}
       title={title}
       role="gridcell"
+      aria-label={title}
     >
       {inner}
     </Link>

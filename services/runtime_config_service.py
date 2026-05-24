@@ -6,6 +6,13 @@ import json
 import os
 from typing import Any
 
+from services.inference_backends import (
+    BACKEND_MEDIAPIPE,
+    BACKEND_MMPose,
+    BACKEND_RTMPOSE_ONNX,
+    _ALIASES as _INFERENCE_BACKEND_ALIASES,
+)
+
 DEFAULT_PATH = os.environ.get("RUNTIME_CONFIG_FILE", "localdata/runtime_config.json")
 
 # 现场暴露项（与 ROADMAP 一致）
@@ -29,15 +36,8 @@ CAMERA_OVERRIDE_KEYS = {
     )
 }
 
-_BACKEND_ALIASES = {
-    "lite": "mediapipe",
-    "mp": "mediapipe",
-    "mediapipe": "mediapipe",
-    "mmpose": "mmpose",
-    "mm": "mmpose",
-    "default": "mmpose",
-}
-_ALLOWED_BACKENDS = frozenset({"mmpose", "mediapipe"})
+_BACKEND_ALIASES = dict(_INFERENCE_BACKEND_ALIASES)
+_ALLOWED_BACKENDS = frozenset({BACKEND_MMPose, BACKEND_MEDIAPIPE, BACKEND_RTMPOSE_ONNX})
 
 
 def _load_json(path: str) -> dict:
@@ -91,11 +91,12 @@ def _coerce_setting_value(pub_key: str, raw: Any, typ: type) -> Any:
     return str(raw).strip()
 
 
-def normalize_camera_settings(raw: dict | None) -> dict:
-    """仅保留合法的摄像头级覆盖项。"""
+def normalize_camera_settings(raw: dict | None, *, strict: bool = False) -> dict:
+    """仅保留合法的摄像头级覆盖项。strict=True 时非法值抛错（供保存接口返回明确错误）。"""
     if not isinstance(raw, dict):
         return {}
     out = {}
+    errors: list[str] = []
     for pub_key, (_, _, typ) in CAMERA_OVERRIDE_KEYS.items():
         if pub_key not in raw:
             continue
@@ -104,8 +105,12 @@ def normalize_camera_settings(raw: dict | None) -> dict:
             continue
         try:
             out[pub_key] = _coerce_setting_value(pub_key, val, typ)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            if strict:
+                errors.append(f"{pub_key}: {exc}")
             continue
+    if strict and errors:
+        raise ValueError("; ".join(errors))
     return out
 
 

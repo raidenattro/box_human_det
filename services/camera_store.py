@@ -185,7 +185,10 @@ def validate_camera_payload(data: dict, existing_id: str | None = None) -> tuple
         "framerate": data.get("framerate") or 15,
     }
     if "settings" in data:
-        raw_rec["settings"] = normalize_camera_settings(data.get("settings"))
+        try:
+            raw_rec["settings"] = normalize_camera_settings(data.get("settings"), strict=True)
+        except ValueError as exc:
+            return None, str(exc)
     rec = _normalize_record(raw_rec)
     if not rec:
         return None, "配置无效"

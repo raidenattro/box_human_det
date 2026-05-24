@@ -6,7 +6,13 @@ import time
 
 from core.config import load_app_config
 from services.camera_service import normalize_rtsp_url
-from services.inference_backends import resolve_backend_name
+from services.inference_backends import (
+    BACKEND_MEDIAPIPE,
+    BACKEND_MMPose,
+    BACKEND_RTMPOSE_ONNX,
+    _LITE_BACKENDS,
+    resolve_backend_name,
+)
 from services.annotation_service import ensure_camera_annotation_file
 from services.runtime_config_service import get_effective_settings
 
@@ -219,27 +225,31 @@ def _resolve_inference_image(client, backend: str) -> tuple[str, str]:
     explicit = os.environ.get("INFERENCE_IMAGE", "").strip()
     if explicit:
         if _image_exists(client, explicit):
-            eff = "mediapipe" if "lite" in explicit.lower() else backend
+            eff = backend
+            if backend == BACKEND_MMPose and "lite" in explicit.lower():
+                eff = BACKEND_MEDIAPIPE
             return explicit, eff
         if _image_exists(client, INFERENCE_LITE_IMAGE):
-            return INFERENCE_LITE_IMAGE, "mediapipe"
+            fallback = BACKEND_MEDIAPIPE if backend == BACKEND_MMPose else backend
+            return INFERENCE_LITE_IMAGE, fallback
         return explicit, backend
 
-    if backend == "mediapipe":
+    if backend in _LITE_BACKENDS:
         use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
         if use_gpu and _image_exists(client, INFERENCE_LITE_GPU_IMAGE):
-            return INFERENCE_LITE_GPU_IMAGE, "mediapipe"
+            return INFERENCE_LITE_GPU_IMAGE, backend
         if _image_exists(client, INFERENCE_LITE_IMAGE):
-            return INFERENCE_LITE_IMAGE, "mediapipe"
+            return INFERENCE_LITE_IMAGE, backend
         if use_gpu:
-            return INFERENCE_LITE_GPU_IMAGE, "mediapipe"
-        return INFERENCE_LITE_IMAGE, "mediapipe"
+            return INFERENCE_LITE_GPU_IMAGE, backend
+        return INFERENCE_LITE_IMAGE, backend
 
     if _image_exists(client, INFERENCE_IMAGE):
-        return INFERENCE_IMAGE, "mmpose"
+        return INFERENCE_IMAGE, BACKEND_MMPose
     if _image_exists(client, INFERENCE_LITE_IMAGE):
-        return INFERENCE_LITE_IMAGE, "mediapipe"
-    return INFERENCE_IMAGE, "mmpose"
+        fallback = BACKEND_MEDIAPIPE if backend == BACKEND_MMPose else backend
+        return INFERENCE_LITE_IMAGE, fallback
+    return INFERENCE_IMAGE, BACKEND_MMPose
 
 
 def _stream_url_for_container(url: str) -> str:

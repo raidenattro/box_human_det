@@ -55,9 +55,6 @@
 
 3. ~~监控界面上的“开启检测”开关，旁边默认显示一横，表示全局没有配模型？但实际上全局配好了的，有些摄像头有问题，不全是。另外摄像头个性配置中选择了指定的算法，监控界面上也不会变，很奇怪！需要核实并解决。~~ 似乎已经解决了，现在的问题就是更新话覆盖模型后，如果启动失败会自动fallback到全局默认。
 
-4. 模型框架单核 FPS多核 FPS备注
-RTMPose-tMMPose / ONNX~25–35~60–90最轻量，工业部署首选
-RTMPose-sMMPose / ONNX~15–25~40–60精度/速度均衡
-MoveNet LightningTFLite~25–40~50–80Google官方，移动端优化好
+4. **CPU 姿态模型（已实现 RTMPose-t ONNX）** — 后端名 `rtmpose_onnx`（RTMDet-nano + RTMPose-t，ONNX Runtime，COCO-17）；UI「推理模型」可选；需 `visual-dps-inference-lite` 镜像。调研备选（未集成）：RTMPose-s、MoveNet Lightning。
 
 5. 需要生成一个svg Logo，作为本系统的Logo；本系统名字DiDPS（意思是深度智能DPS，Digital Picking System（数字拣选系统））

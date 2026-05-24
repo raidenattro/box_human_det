@@ -1,5 +1,36 @@
 # 变更日志
 
+## 2026-05-24 — RTMPose-t ONNX 后端 + 摄像头配置修复 + 矩阵页
+
+### 推理后端 `rtmpose_onnx`
+
+- 新增 `RTMPoseOnnxBackend`：RTMDet-nano（人体框）+ RTMPose-t（COCO-17），ONNX Runtime CPU。
+- `Dockerfile.inference-lite` 预置 ONNX 权重；`app_config.json` 增加 `rtmpose_onnx_*` 路径/URL。
+- UI「推理模型」可选 RTMPose-T；lite 镜像路由保留用户所选 backend（不再强制改回 mediapipe）。
+
+### 配置与保存
+
+- `runtime_config_service`：`_ALLOWED_BACKENDS` 纳入 `rtmpose_onnx`（修复保存后丢失）。
+- `normalize_camera_settings(..., strict=True)` + `camera_store` 非法值返回明确错误。
+
+### 推理日志（容器 stdout）
+
+| 阶段 | 输出 |
+|------|------|
+| 选后端 | `ℹ️ 推理后端: rtmpose_onnx` |
+| 加载模型 | `🚀 正在加载 RTMDet-nano + RTMPose-t（ONNX）…` |
+| 缺权重 | `⬇️ 正在下载 ONNX 模型包: <url>` |
+| 就绪 | `✅ RTMPose-t ONNX 已就绪: det=… pose=…` |
+| 主循环 | `ℹ️ 推理参数: … frame_rate=… pose_frame_interval=…`（`inference_service`） |
+
+说明：det = 人体检测（bbox），pose = 17 点姿态；碰撞在 event-worker，不在推理容器。
+
+### 前端
+
+- 事件矩阵页：自适应列宽、单元格紧凑展示（货位编码为主）。
+
+---
+
 ## 2026-05-24 — Docker Compose 交付 + MediaMTX 容器化 + 播放修复
 
 ### 部署与 Compose
