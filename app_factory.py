@@ -21,6 +21,7 @@ from services.camera_routes import register_camera_routes
 from services.camera_service import get_last_frame_b64
 from services.camera_store import load_cameras
 from services.inference_service import InferenceService
+from services.live_bus import live_hub
 from services.video_service import get_first_frame_b64, handle_video_upload, initialize_source_from_config
 
 
@@ -35,7 +36,7 @@ def create_app():
         default_json_file=paths["default_json_file"],
     )
     callback_reporter = CollisionCallbackReporter(app_config.get("reporting", {}))
-    inference_service = InferenceService(app_config, STATE, callback_reporter=callback_reporter)
+    inference_service = InferenceService(app_config, STATE)
     app = FastAPI()
     api_router = APIRouter(prefix="/api")
     auth_settings = load_auth_settings(app_config)
@@ -49,11 +50,13 @@ def create_app():
         if auth_settings["enabled"] and auth_settings["local"]["enabled"]:
             ensure_users_file(auth_settings["local"]["users_file"])
         await callback_reporter.start()
+        await live_hub.start()
         if STATE.source_type == "stream" and STATE.video_path:
             await inference_service.start_inference()
 
     @app.on_event("shutdown")
     async def shutdown_event():
+        await live_hub.stop()
         await callback_reporter.stop()
 
     frames_dir = os.path.join(paths["base_localdata_dir"], "frames")

@@ -7,6 +7,8 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
+from services.live_bus import get_snapshot, live_hub
+
 from services.audit_service import audit_from_result
 from services.camera_service import (
     capture_camera_frame,
@@ -26,7 +28,6 @@ from services.camera_store import (
     update_camera,
 )
 from services.inference_container_service import (
-    INFERENCE_STATUS_DIR,
     get_inference_status,
     start_inference_container,
     stop_inference_container,
@@ -61,9 +62,22 @@ def register_camera_routes(
     capture_height: int = 480,
 ):
     @router.get("/cameras")
-    async def list_cameras():
-        items = list_cameras_with_status(camera_ips_file, frames_dir)
+    async def list_cameras(probe: bool = True):
+        items = list_cameras_with_status(
+            camera_ips_file,
+            frames_dir,
+            probe_online=probe,
+        )
         return {"status": "success", "items": items}
+
+    def _attach_list_items(result: dict, *, probe: bool = False) -> dict:
+        if result.get("status") == "success":
+            result["items"] = list_cameras_with_status(
+                camera_ips_file,
+                frames_dir,
+                probe_online=probe,
+            )
+        return result
 
     @router.get("/cameras/{camera_id}")
     async def read_camera(camera_id: str, probe: bool = False, settings: bool = True):
@@ -106,19 +120,19 @@ def register_camera_routes(
             cam = result["camera"]
             materialize_camera_annotation(cam.get("id") or cam.get("path"), json_dir, camera=cam)
         audit_from_result(request, "camera.create", "camera", data.get("path") or data.get("id", ""), result)
-        return result
+        return _attach_list_items(result, probe=False)
 
     @router.put("/cameras/{camera_id}")
     async def update_camera_api(camera_id: str, data: dict, request: Request):
         result = update_camera(camera_ips_file, mediamtx_config_path, camera_id, data)
         audit_from_result(request, "camera.update", "camera", camera_id, result)
-        return result
+        return _attach_list_items(result, probe=False)
 
     @router.delete("/cameras/{camera_id}")
     async def delete_camera_api(camera_id: str, request: Request):
         result = delete_camera(camera_ips_file, mediamtx_config_path, camera_id)
         audit_from_result(request, "camera.delete", "camera", camera_id, result)
-        return result
+        return _attach_list_items(result, probe=False)
 
     @router.get("/cameras/{camera_id}/annotation")
     async def read_camera_annotation(camera_id: str):
@@ -161,30 +175,43 @@ def register_camera_routes(
 
     @router.get("/cameras/{camera_id}/inference/live")
     async def read_camera_inference_live(camera_id: str):
-        path = os.path.join(INFERENCE_STATUS_DIR, f"{camera_id}.status.json")
-        collisions = []
-        alarm_collisions = []
-        skeletons = []
-        infer_width = 0
-        infer_height = 0
-        if os.path.isfile(path):
-            try:
-                data = json.loads(open(path, "r", encoding="utf-8").read())
-                collisions = data.get("collisions") or []
-                alarm_collisions = data.get("alarm_collisions") or []
-                skeletons = data.get("skeletons") or []
-                infer_width = int(data.get("infer_width") or 0)
-                infer_height = int(data.get("infer_height") or 0)
-            except (json.JSONDecodeError, OSError):
-                pass
+        snap = get_snapshot(camera_id)
+        if snap:
+            return {
+                "status": "success",
+                "deprecated": True,
+                "hint": "请使用 GET /api/cameras/{id}/live/stream (SSE)",
+                "collisions": snap.get("collisions") or [],
+                "alarm_collisions": snap.get("alarm_collisions") or [],
+                "skeletons": snap.get("skeletons") or [],
+                "infer_width": int(snap.get("infer_width") or 0),
+                "infer_height": int(snap.get("infer_height") or 0),
+            }
         return {
             "status": "success",
-            "collisions": collisions,
-            "alarm_collisions": alarm_collisions,
-            "skeletons": skeletons,
-            "infer_width": infer_width,
-            "infer_height": infer_height,
+            "deprecated": True,
+            "collisions": [],
+            "alarm_collisions": [],
+            "skeletons": [],
+            "infer_width": 0,
+            "infer_height": 0,
         }
+
+    @router.get("/cameras/{camera_id}/live/stream")
+    async def camera_live_stream(camera_id: str):
+        async def event_generator():
+            async for chunk in live_hub.subscribe_sse(camera_id):
+                yield chunk
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.post("/cameras/{camera_id}/inference/start")
     async def start_camera_inference(camera_id: str, request: Request):

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 同一段 MP4 同时推到多路 MediaMTX path（cam2 cam3 cam4 … 各起一个 ffmpeg）
+# 同一段 MP4 同时推到多路 MediaMTX path（cam2 cam3 … 各起一个 ffmpeg）
 # 用法:
 #   ./scripts/start-mp4-rtsp-multi.sh cam2 cam3 cam4 cam5
 #   ./scripts/start-mp4-rtsp-multi.sh /path/to/video.mp4 cam2 cam3 cam4 cam5

@@ -25,13 +25,19 @@ _camera_runtime: dict = {}
 
 
 def normalize_rtsp_url(url: str) -> str:
-    if not RTSP_HOST_REWRITE:
-        return url
-    if "127.0.0.1" in url:
-        return url.replace("127.0.0.1", RTSP_HOST_REWRITE)
-    if "localhost" in url:
-        return url.replace("localhost", RTSP_HOST_REWRITE)
-    return url
+    """宿主机配置多为 rtsp://127.0.0.1:8554/…；compose 内 UI/推理应连 mediamtx 服务名。"""
+    rewritten = str(url or "")
+    if RTSP_HOST_REWRITE:
+        if "127.0.0.1" in rewritten:
+            rewritten = rewritten.replace("127.0.0.1", RTSP_HOST_REWRITE)
+        if "localhost" in rewritten:
+            rewritten = rewritten.replace("localhost", RTSP_HOST_REWRITE)
+        return rewritten
+    mtx_host = os.environ.get("MEDIAMTX_INTERNAL_HOST", "").strip()
+    if mtx_host:
+        for local in ("127.0.0.1", "localhost"):
+            rewritten = rewritten.replace(f"rtsp://{local}:", f"rtsp://{mtx_host}:")
+    return rewritten
 
 
 def camera_id_from_url(url: str) -> str:
@@ -74,27 +80,12 @@ def save_last_frame(last_frame_file: str, frame):
 
 
 def probe_camera_online(url: str, max_reads: int | None = None) -> bool:
+    _ = max_reads
+    from services.rtsp_capture import read_rtsp_frame_once
+
     stream_url = normalize_rtsp_url(url)
-    reads = PROBE_MAX_READS if max_reads is None else max_reads
-    prev_opts = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS")
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = _FFMPEG_CAPTURE_OPTS
-    cap = None
-    try:
-        cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
-        if not cap.isOpened():
-            return False
-        for _ in range(reads):
-            ok, frame = cap.read()
-            if ok and frame is not None:
-                return True
-        return False
-    finally:
-        if cap is not None:
-            cap.release()
-        if prev_opts is None:
-            os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
-        else:
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = prev_opts
+    frame = read_rtsp_frame_once(stream_url, timeout_sec=6.0)
+    return frame is not None
 
 
 def _update_runtime_status(camera_id: str, online: bool) -> dict:
@@ -169,28 +160,42 @@ def _probe_cameras_parallel(pending: list[tuple[int, str, str]]) -> dict[int, di
     return statuses
 
 
-def list_cameras_with_status(camera_ips_file: str, frames_dir: str, with_inference: bool = True) -> List[dict]:
-    from services.camera_store import load_cameras
-
-    items = load_cameras(camera_ips_file)
+def enrich_camera_items(
+    items: List[dict],
+    frames_dir: str,
+    *,
+    probe_online: bool = True,
+    with_inference: bool = True,
+) -> List[dict]:
     pending: list[tuple[int, str, str]] = []
     status_by_index: dict[int, dict] = {}
 
     for index, item in enumerate(items):
-        url = item["url"]
+        url = item.get("url") or ""
         cid = stable_camera_id(item)
         cached = _cached_camera_status(cid)
         if cached:
             status_by_index[index] = cached
-        else:
+        elif probe_online and url:
             pending.append((index, url, cid))
+        else:
+            status_by_index[index] = {
+                "id": cid,
+                "online": False,
+                "activity_seconds": 0,
+                "last_check": time.time(),
+            }
 
-    status_by_index.update(_probe_cameras_parallel(pending))
+    if probe_online:
+        status_by_index.update(_probe_cameras_parallel(pending))
 
     result = []
     for index, item in enumerate(items):
         cid = stable_camera_id(item)
-        status = status_by_index[index]
+        status = status_by_index.get(index) or {
+            "online": False,
+            "activity_seconds": 0,
+        }
         thumb_path = camera_thumbnail_path(frames_dir, cid)
         last_frame_at = os.path.getmtime(thumb_path) if os.path.exists(thumb_path) else None
         result.append(
@@ -209,6 +214,24 @@ def list_cameras_with_status(camera_ips_file: str, frames_dir: str, with_inferen
 
         return attach_inference_status(result)
     return result
+
+
+def list_cameras_with_status(
+    camera_ips_file: str,
+    frames_dir: str,
+    with_inference: bool = True,
+    *,
+    probe_online: bool = True,
+) -> List[dict]:
+    from services.camera_store import load_cameras
+
+    items = load_cameras(camera_ips_file)
+    return enrich_camera_items(
+        items,
+        frames_dir,
+        probe_online=probe_online,
+        with_inference=with_inference,
+    )
 
 
 def resolve_camera_id_for_url(camera_ips_file: str, raw_url: str) -> str:
@@ -237,14 +260,9 @@ def capture_camera_frame(
         else camera_id_from_url(raw_url)
     )
     stream_url = normalize_rtsp_url(raw_url)
-    cap = cv2.VideoCapture(stream_url)
-    if not cap.isOpened():
-        cap.release()
-        _update_runtime_status(camera_id, False)
-        return {"error": "failed to open camera stream"}
+    from services.rtsp_capture import read_rtsp_frame_once
 
-    frame = read_non_black_frame(cap)
-    cap.release()
+    frame = read_rtsp_frame_once(stream_url, timeout_sec=8.0)
     if frame is None:
         _update_runtime_status(camera_id, False)
         return {"error": "failed to read frame from camera"}

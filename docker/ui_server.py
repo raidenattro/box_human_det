@@ -14,6 +14,8 @@ from services.log_store import init_log_db
 from services.annotation_service import flatten_annotation_boxes, load_annotation, save_annotation
 from services.camera_routes import register_camera_routes
 from services.camera_store import load_cameras
+from services.live_bus import live_hub
+from services.mediamtx_service import ensure_mediamtx_config
 
 app = FastAPI(title="visual-dps-dev")
 api_router = APIRouter(prefix="/api")
@@ -29,6 +31,18 @@ async def auth_startup():
     init_log_db()
     if AUTH_SETTINGS["enabled"] and AUTH_SETTINGS["local"]["enabled"]:
         ensure_users_file(AUTH_SETTINGS["local"]["users_file"])
+    mtx_fix = ensure_mediamtx_config(
+        os.environ.get("MEDIAMTX_CONFIG_PATH", "localdata/mediamtx.yml"),
+        load_cameras(os.environ.get("CAMERA_IPS_FILE", "localdata/camera_ips.json")),
+    )
+    if mtx_fix:
+        print(f"ℹ️ {mtx_fix['hint']}", flush=True)
+    await live_hub.start()
+
+
+@app.on_event("shutdown")
+async def auth_shutdown():
+    await live_hub.stop()
 
 BASE_DIR = os.environ.get("BASE_DIR", ".")
 JSON_DIR = os.environ.get("JSON_DIR", "localdata/json")

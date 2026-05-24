@@ -52,8 +52,11 @@ main.py
               ├── video_service.py       # 上传、转码、首帧
               ├── camera_service.py      # 摄像头 IP、抓帧（来自 annotation_tool）
               ├── annotation_service.py  # 标注 JSON 读写、多货架展平
-              ├── inference_service.py   # 推理主循环 + WebSocket
-              └── callback_reporter.py   # 碰撞报警异步回调 Java
+              ├── inference_service.py   # 推理主循环（仅检测+姿态 → pose Redis）
+              ├── mediamtx_service.py / mediamtx_proxy.py  # MediaMTX 配置与 HLS/WHEP 代理
+              ├── pose_bus.py / event_bus.py / live_bus.py
+              ├── event_engine/          # 碰撞等事件算法（event_worker 进程）
+              └── callback_reporter.py   # 回调 Java（由 event_worker 启动）
 ```
 
 **原则：**
@@ -72,7 +75,7 @@ app_config.json 中 source.annotation_json 指向该文件
        ↓
 启动服务（流模式自动推理）或 / 页面手动 start_inference
        ↓
-inference_service 读取 JSON → 展平 boxes → 检测/姿态/碰撞 → 回调 Java
+推理容器：检测/姿态 → `pose:live:*`；event-worker：读标注 JSON → 碰撞/报警 → `event:live:*` + 回调 Java；UI SSE 合并二者
 ```
 
 ---

@@ -8,7 +8,7 @@ import ShelfDrawer, { emptyShelfForm } from '../components/ShelfDrawer';
 import { useAnnotateTool } from '../features/annotate/useAnnotateTool';
 import { boxRoiKey, parseAnnotationPayload } from '../lib/annotation';
 import { getPerspectiveTransform, perspectiveTransform } from '../lib/geometry';
-import { apiGet, apiPost, cameraPlaybackUrl } from '../api/client';
+import { apiGet, apiPost, cameraPlaybackUrl, openCameraLiveStream } from '../api/client';
 import { resolveCameraModelLabel } from '../lib/cameraSettings';
 import { formatInferenceMessage, formatUserError } from '../lib/userFacingText';
 import './MonitorPage.css';
@@ -700,26 +700,24 @@ export default function MonitorPage() {
       return undefined;
     }
 
-    const pollLive = async () => {
-      try {
-        const data = await apiGet(`/api/cameras/${encodeURIComponent(cameraId)}/inference/live`);
-        if (data.status === 'success') {
-          setLiveHits(Array.isArray(data.collisions) ? data.collisions : []);
-          setLiveAlarms(Array.isArray(data.alarm_collisions) ? data.alarm_collisions : []);
-          setLiveSkeletons(Array.isArray(data.skeletons) ? data.skeletons : []);
-          setLiveInferSize({
-            w: Number(data.infer_width) || 0,
-            h: Number(data.infer_height) || 0,
-          });
-        }
-      } catch {
-        /* ignore */
-      }
+    const applyLiveFrame = (data) => {
+      if (!data || typeof data !== 'object') return;
+      setLiveHits(Array.isArray(data.collisions) ? data.collisions : []);
+      setLiveAlarms(Array.isArray(data.alarm_collisions) ? data.alarm_collisions : []);
+      setLiveSkeletons(Array.isArray(data.skeletons) ? data.skeletons : []);
+      setLiveInferSize({
+        w: Number(data.infer_width) || 0,
+        h: Number(data.infer_height) || 0,
+      });
     };
 
-    pollLive();
-    const timer = setInterval(pollLive, 1000);
-    return () => clearInterval(timer);
+    const closeStream = openCameraLiveStream(cameraId, {
+      onFrame: applyLiveFrame,
+      onError: () => {
+        /* EventSource 会自动重连 */
+      },
+    });
+    return closeStream;
   }, [cameraId, viewMode, monitorCamera?.inference?.status]);
 
   useEffect(() => {

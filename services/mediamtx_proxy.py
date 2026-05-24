@@ -17,6 +17,18 @@ MEDIAMTX_WEBRTC_BASE = os.environ.get(
     f"http://127.0.0.1:{os.environ.get('MEDIAMTX_WEBRTC_PORT', '8889')}",
 ).rstrip("/")
 PROXY_TIMEOUT = float(os.environ.get("MEDIAMTX_PROXY_TIMEOUT", "15"))
+MEDIAMTX_PUBLIC_HOST = os.environ.get("MEDIAMTX_PUBLIC_HOST", "127.0.0.1")
+# 容器内网 / RFC1918，浏览器无法直连，需在 WHEP Answer 中改写为 MEDIAMTX_PUBLIC_HOST
+_PRIVATE_IP_RE = re.compile(
+    r"\b(?:10(?:\.\d{1,3}){3}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2})\b"
+)
+
+
+def _rewrite_webrtc_sdp(body: bytes) -> bytes:
+    text = body.decode("utf-8", errors="replace")
+    if not _PRIVATE_IP_RE.search(text):
+        return body
+    return _PRIVATE_IP_RE.sub(MEDIAMTX_PUBLIC_HOST, text).encode("utf-8")
 
 
 def _rewrite_m3u8(body: bytes, camera_id: str, path_slug: str) -> bytes:
@@ -87,8 +99,12 @@ async def proxy_whep(path_slug: str, request: Request) -> Response:
             out_headers[key] = upstream.headers[key]
     if "content-type" not in out_headers:
         out_headers["Content-Type"] = "application/sdp"
+    content = upstream.content
+    ctype = (out_headers.get("Content-Type") or upstream.headers.get("content-type") or "").lower()
+    if upstream.is_success and "sdp" in ctype:
+        content = _rewrite_webrtc_sdp(content)
     return Response(
-        content=upstream.content,
+        content=content,
         status_code=upstream.status_code,
         headers=out_headers,
     )

@@ -8,7 +8,6 @@ import time
 
 from core.config import load_app_config
 from core.state import STATE
-from services.callback_reporter import CollisionCallbackReporter
 from services.camera_service import normalize_rtsp_url
 from services.inference_backends import resolve_backend_name
 from services.inference_service import InferenceService
@@ -106,9 +105,7 @@ async def _run_worker():
         {"stream_url": stream_url, "json_path": json_path, "backend": backend},
     )
 
-    reporter = CollisionCallbackReporter(app_config.get("reporting", {}))
-    await reporter.start()
-    service = InferenceService(app_config, STATE, callback_reporter=reporter)
+    service = InferenceService(app_config, STATE)
 
     stopping = False
 
@@ -149,7 +146,6 @@ async def _run_worker():
         )
         await asyncio.sleep(3)
 
-    await reporter.stop()
     if not stopping:
         write_status(base_dir, camera_id, "stopped", "正常退出")
     else:

@@ -29,7 +29,8 @@ RUN pip install \
     "passlib[bcrypt]" \
     "bcrypt<4.1" \
     httpx \
-    itsdangerous
+    itsdangerous \
+    redis
 
 COPY . /app
 

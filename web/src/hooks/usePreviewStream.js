@@ -1,23 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 
-async function startWhep(whepUrl, videoEl, pcRef) {
+async function startWhep(whepUrl, videoEl, pcRef, onIceFailed) {
   if (pcRef.current) {
     pcRef.current.close();
     pcRef.current = null;
   }
-  const pc = new RTCPeerConnection();
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  });
   pcRef.current = pc;
   pc.addTransceiver('video', { direction: 'recvonly' });
   pc.addTransceiver('audio', { direction: 'recvonly' });
   pc.ontrack = (ev) => {
     const [stream] = ev.streams;
-    if (stream) videoEl.srcObject = stream;
+    if (stream) {
+      videoEl.srcObject = stream;
+      videoEl.play().catch(() => {});
+    }
+  };
+  pc.oniceconnectionstatechange = () => {
+    const st = pc.iceConnectionState;
+    if (st === 'failed' || st === 'disconnected') {
+      onIceFailed?.(
+        'WebRTC 媒体连接失败，请确认已映射 UDP 8189（docker compose 中 MEDIAMTX_WEBRTC_UDP_PORT）',
+      );
+    }
   };
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   const resp = await fetch(whepUrl, {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/sdp' },
     body: offer.sdp,
   });
@@ -104,15 +118,27 @@ export function usePreviewStream({ format, playback, mjpegSrc, videoRef, imgRef,
       }
       cleanup();
       if (Hls.isSupported()) {
-        const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: false,
+          xhrSetup: (xhr) => {
+            xhr.withCredentials = true;
+          },
+        });
         hlsRef.current = hls;
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          video.play().catch(() => {});
+        });
         hls.on(Hls.Events.ERROR, (_, data) => {
-          if (data.fatal) setStreamError('HLS 播放失败');
+          if (data.fatal) {
+            setStreamError(`HLS 播放失败: ${data.details || data.type}`);
+          }
         });
         hls.loadSource(hlsUrl);
         hls.attachMedia(video);
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = hlsUrl;
+        video.play().catch(() => {});
       } else {
         setStreamError('当前浏览器不支持 HLS');
       }
@@ -129,7 +155,9 @@ export function usePreviewStream({ format, playback, mjpegSrc, videoRef, imgRef,
       let cancelled = false;
       (async () => {
         try {
-          await startWhep(whepUrl, video, pcRef);
+          await startWhep(whepUrl, video, pcRef, (msg) => {
+            if (!cancelled) setStreamError(msg);
+          });
         } catch (err) {
           if (!cancelled) {
             const msg = err?.message || 'WebRTC 连接失败';

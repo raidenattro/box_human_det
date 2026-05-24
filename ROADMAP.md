@@ -24,3 +24,12 @@
 - 推理循环每帧读取内存配置（frame_rate / height / pose_frame_interval）
 - 标注页与监控页顶部共用 Settings 抽屉，不再跨页找配置
 - 标注相关 `capture_height` 与上传转码高度跟随 `inference.height`，减少重复配置
+
+
+## 讨论（已实现：见 [docs/PIPELINE_SPLIT.md](./docs/PIPELINE_SPLIT.md)）
+
+1. **17 点姿态** — 每路独立推理容器，发布 `pose:live:{camera_id}`
+2. **动作/事件** — 默认 1 个 `visual-dps-event-worker`；可按 `EVENT_WORKER_SHARD_COUNT/INDEX` 起 N 个（按摄像头分片，见 PIPELINE_SPLIT.md）
+3. **UI** — `LiveHub` 合并 pose + event → SSE；推理容器不再做碰撞/回调
+
+部署：`docker compose --profile ui up` 含 redis + ui + event-worker；按摄像头 `inference/start` 起推理容器。

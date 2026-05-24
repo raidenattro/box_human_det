@@ -1,0 +1,13 @@
+{
+  "models": {
+    "backend": "mediapipe"
+  },
+  "inference": {
+    "frame_rate": 15,
+    "height": 480,
+    "pose_frame_interval": 3
+  },
+  "debug-info": {
+    "enabled": false
+  }
+}

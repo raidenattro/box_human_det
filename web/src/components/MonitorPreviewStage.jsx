@@ -512,6 +512,8 @@ export default function MonitorPreviewStage({
                   muted
                   playsInline
                   onLoadedMetadata={updateLayout}
+                  onLoadedData={updateLayout}
+                  onPlaying={updateLayout}
                 />
                 <img
                   ref={imgRef}

@@ -14,10 +14,14 @@ if [[ ! -f web/dist/index.html ]]; then
 fi
 
 echo "==> 构建 Docker 镜像 visual-dps-ui..."
-docker compose --profile ui build visual-dps-ui
+docker compose build visual-dps-ui visual-dps-event-worker
 
 if [[ "${1:-}" == "--up" ]]; then
-  echo "==> 启动容器..."
-  docker compose --profile ui up -d visual-dps-ui
+  if [[ -z "${REDIS_PASSWORD:-}" ]]; then
+    echo "错误: 请先 export REDIS_PASSWORD=... 或在本目录创建 .env（可参考 .env.example）" >&2
+    exit 1
+  fi
+  echo "==> 启动 Redis + UI 容器..."
+  docker compose up -d
   echo "完成: http://127.0.0.1:8045"
 fi

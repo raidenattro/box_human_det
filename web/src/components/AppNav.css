@@ -15,19 +15,19 @@
   flex-wrap: wrap;
 }
 
-.app-nav a {
+.app-nav-links a {
   text-decoration: none;
   font-size: 0.95rem;
   color: #00d4aa;
 }
 
-.app-nav a.active {
+.app-nav-links a.active {
   color: #fff;
   font-weight: 600;
   pointer-events: none;
 }
 
-.app-nav a:hover:not(.active) {
+.app-nav-links a:hover:not(.active) {
   text-decoration: underline;
 }
 
@@ -42,8 +42,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
   border-radius: 6px;
   border: 1px solid #3a4f5f;
   background: #141c22;
@@ -51,6 +52,14 @@
   text-decoration: none;
   font-size: 1rem;
   line-height: 1;
+}
+
+.app-nav-settings:hover,
+.app-nav-settings:focus,
+.app-nav-settings:focus-visible,
+.app-nav-settings:visited,
+.app-nav-settings.active {
+  text-decoration: none;
 }
 
 .app-nav-settings:hover {
@@ -72,8 +81,15 @@
 }
 
 .app-nav-logout {
-  padding: 4px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 12px;
   font-size: 0.8rem;
+  line-height: 1;
   border-radius: 6px;
   border: 1px solid #3a4f5f;
   background: #141c22;

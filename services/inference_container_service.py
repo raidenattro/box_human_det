@@ -13,6 +13,9 @@ from services.runtime_config_service import get_effective_settings
 INFERENCE_CONTAINER_PREFIX = os.environ.get("INFERENCE_CONTAINER_PREFIX", "visual-dps-infer-")
 INFERENCE_IMAGE = os.environ.get("INFERENCE_IMAGE", "visual-dps-inference:latest")
 INFERENCE_LITE_IMAGE = os.environ.get("INFERENCE_LITE_IMAGE", "visual-dps-inference-lite:latest")
+INFERENCE_LITE_GPU_IMAGE = os.environ.get(
+    "INFERENCE_LITE_GPU_IMAGE", "visual-dps-inference-lite-gpu:latest"
+)
 HOST_PROJECT_ROOT = os.environ.get("HOST_PROJECT_ROOT", "").strip()
 INFERENCE_JSON_PATH = os.environ.get(
     "INFERENCE_JSON_PATH",
@@ -207,8 +210,13 @@ def _resolve_inference_image(client, backend: str) -> tuple[str, str]:
         return explicit, backend
 
     if backend == "mediapipe":
+        use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
+        if use_gpu and _image_exists(client, INFERENCE_LITE_GPU_IMAGE):
+            return INFERENCE_LITE_GPU_IMAGE, "mediapipe"
         if _image_exists(client, INFERENCE_LITE_IMAGE):
             return INFERENCE_LITE_IMAGE, "mediapipe"
+        if use_gpu:
+            return INFERENCE_LITE_GPU_IMAGE, "mediapipe"
         return INFERENCE_LITE_IMAGE, "mediapipe"
 
     if _image_exists(client, INFERENCE_IMAGE):
@@ -219,10 +227,8 @@ def _resolve_inference_image(client, backend: str) -> tuple[str, str]:
 
 
 def _stream_url_for_container(url: str) -> str:
-    rewritten = normalize_rtsp_url(url)
-    if "127.0.0.1" in rewritten or "localhost" in rewritten:
-        return rewritten.replace("127.0.0.1", "host.docker.internal").replace("localhost", "host.docker.internal")
-    return rewritten
+    """将配置里的本机 RTSP 地址改写为 compose 内 mediamtx 服务名。"""
+    return normalize_rtsp_url(url)
 
 
 def start_inference_container(camera: dict, request=None) -> dict:
@@ -269,12 +275,22 @@ def start_inference_container(camera: dict, request=None) -> dict:
         "INFERENCE_STREAM_URL": _stream_url_for_container(stream_url),
         "INFERENCE_JSON_PATH": f"/app/{json_rel}",
         "INFERENCE_BACKEND": backend,
-        "RTSP_HOST_REWRITE": "host.docker.internal",
+        "MEDIAMTX_INTERNAL_HOST": os.environ.get("MEDIAMTX_INTERNAL_HOST", "mediamtx"),
         "INFERENCE_FRAME_RATE": str(effective.get("inference.frame_rate", 15)),
         "INFERENCE_HEIGHT": str(effective.get("inference.height", 480)),
         "INFERENCE_POSE_FRAME_INTERVAL": str(effective.get("inference.pose_frame_interval", 3)),
         "INFERENCE_DEBUG_VISUAL": "1" if effective.get("debug-info.enabled") else "0",
+        "RTSP_CAPTURE_BACKEND": os.environ.get("RTSP_CAPTURE_BACKEND", "auto"),
     }
+    redis_url = os.environ.get("REDIS_URL", "").strip()
+    if redis_url:
+        env["REDIS_URL"] = redis_url
+    elif os.environ.get("REDIS_PASSWORD", "").strip():
+        redis_host = os.environ.get("REDIS_HOST", "redis").strip() or "redis"
+        redis_port = os.environ.get("REDIS_PORT", "6379").strip() or "6379"
+        env["REDIS_PASSWORD"] = os.environ["REDIS_PASSWORD"]
+        env["REDIS_HOST"] = redis_host
+        env["REDIS_PORT"] = redis_port
 
     device_requests = []
     use_gpu = os.environ.get("INFERENCE_USE_GPU", "1") == "1"
@@ -283,18 +299,23 @@ def start_inference_container(camera: dict, request=None) -> dict:
     if use_gpu:
         device_requests.append(docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]]))
 
+    run_kwargs: dict = {
+        "image": infer_image,
+        "name": name,
+        "detach": True,
+        "environment": env,
+        "volumes": binds,
+        "extra_hosts": {"host.docker.internal": "host-gateway"},
+        "device_requests": device_requests or None,
+        "command": ["python", "inference_worker.py"],
+        "labels": {"visual-dps.role": "inference", "visual-dps.camera_id": camera_id},
+    }
+    docker_network = os.environ.get("DOCKER_NETWORK", "").strip()
+    if docker_network:
+        run_kwargs["network"] = docker_network
+
     try:
-        container = client.containers.run(
-            image=infer_image,
-            name=name,
-            detach=True,
-            environment=env,
-            volumes=binds,
-            extra_hosts={"host.docker.internal": "host-gateway"},
-            device_requests=device_requests or None,
-            command=["python", "inference_worker.py"],
-            labels={"visual-dps.role": "inference", "visual-dps.camera_id": camera_id},
-        )
+        container = client.containers.run(**run_kwargs)
     except Exception as exc:
         import docker
 

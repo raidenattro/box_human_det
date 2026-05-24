@@ -8,10 +8,12 @@ from typing import List
 from urllib.parse import urlparse
 
 MEDIAMTX_RTSP_HOST = os.environ.get("MEDIAMTX_RTSP_HOST", "127.0.0.1")
+MEDIAMTX_INTERNAL_HOST = os.environ.get("MEDIAMTX_INTERNAL_HOST", "mediamtx")
 MEDIAMTX_RTSP_PORT = int(os.environ.get("MEDIAMTX_RTSP_PORT", "8554"))
 MEDIAMTX_HLS_PORT = int(os.environ.get("MEDIAMTX_HLS_PORT", "8888"))
 MEDIAMTX_WEBRTC_PORT = int(os.environ.get("MEDIAMTX_WEBRTC_PORT", "8889"))
 MEDIAMTX_PUBLIC_HOST = os.environ.get("MEDIAMTX_PUBLIC_HOST", "127.0.0.1")
+MEDIAMTX_WEBRTC_ICE_PORT = int(os.environ.get("MEDIAMTX_WEBRTC_ICE_PORT", "8189"))
 MEDIAMTX_API_URL = os.environ.get("MEDIAMTX_API_URL", "http://127.0.0.1:9997").rstrip("/")
 MEDIAMTX_API_TIMEOUT = float(os.environ.get("MEDIAMTX_API_TIMEOUT", "3"))
 
@@ -87,8 +89,10 @@ def is_mediamtx_playback_available(camera: dict) -> bool:
     local_hosts = {
         MEDIAMTX_RTSP_HOST.lower(),
         MEDIAMTX_PUBLIC_HOST.lower(),
+        MEDIAMTX_INTERNAL_HOST.lower(),
         "127.0.0.1",
         "localhost",
+        "mediamtx",
     }
     if host not in local_hosts or port != MEDIAMTX_RTSP_PORT:
         return False
@@ -123,13 +127,39 @@ def generate_mediamtx_yaml(cameras: List[dict]) -> str:
         "",
         "logLevel: info",
         "api: yes",
-        "apiAddress: 127.0.0.1:9997",
+        "apiAddress: :9997",
         f"rtspAddress: :{MEDIAMTX_RTSP_PORT}",
         "rtmpAddress: ''",
         f"hlsAddress: :{MEDIAMTX_HLS_PORT}",
+        "hlsVariant: mpegts",
         f"webrtcAddress: :{MEDIAMTX_WEBRTC_PORT}",
         "webrtcAllowOrigin: '*'",
+        "# Docker：勿向浏览器通告容器网桥 IP，仅通告宿主机可访问地址",
+        "webrtcIPsFromInterfaces: false",
+        f"webrtcAdditionalHosts: ['{MEDIAMTX_PUBLIC_HOST}']",
+        f"webrtcLocalUDPAddress: :{MEDIAMTX_WEBRTC_ICE_PORT}",
+        f"webrtcLocalTCPAddress: :{MEDIAMTX_WEBRTC_ICE_PORT}",
         "srtAddress: ''",
+        "",
+        "# compose 内 UI 经 Docker 网桥访问 API，需放开私网段（默认仅 localhost 免鉴权）",
+        "authInternalUsers:",
+        "  - user: any",
+        "    pass:",
+        "    ips: []",
+        "    permissions:",
+        "      - action: publish",
+        "        path:",
+        "      - action: read",
+        "        path:",
+        "      - action: playback",
+        "        path:",
+        "  - user: any",
+        "    pass:",
+        "    ips: ['127.0.0.1', '::1', '172.16.0.0/12', '10.0.0.0/8', '192.168.0.0/16']",
+        "    permissions:",
+        "      - action: api",
+        "      - action: metrics",
+        "      - action: pprof",
         "",
         "paths:",
     ]
@@ -266,12 +296,43 @@ def reload_mediamtx_runtime(cameras: List[dict]) -> dict:
         return {"reloaded": False, "skipped": True, "reason": str(exc)}
 
 
+def _mediamtx_config_needs_rewrite(config_path: str) -> bool:
+    """旧版 apiAddress 绑定 127.0.0.1 时，compose 内其它容器无法访问 API。"""
+    if not os.path.isfile(config_path):
+        return True
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return True
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.startswith("apiAddress:"):
+            continue
+        if ":9997" in s and "127.0.0.1" not in s:
+            return False
+        return True
+    return True
+
+
 def write_mediamtx_config(config_path: str, cameras: List[dict]) -> str:
     os.makedirs(os.path.dirname(config_path) or ".", exist_ok=True)
     content = generate_mediamtx_yaml(cameras)
     with open(config_path, "w", encoding="utf-8") as f:
         f.write(content)
     return config_path
+
+
+def ensure_mediamtx_config(config_path: str, cameras: List[dict]) -> dict | None:
+    """启动时修正遗留 mediamtx.yml（仅写文件，不调用运行时 API）。"""
+    if not _mediamtx_config_needs_rewrite(config_path):
+        return None
+    path = write_mediamtx_config(config_path, cameras)
+    return {
+        "rewritten": True,
+        "config_path": path,
+        "hint": "已修正 mediamtx.yml 的 apiAddress；若 MediaMTX 已在运行请 docker compose restart mediamtx",
+    }
 
 
 def sync_mediamtx_config(config_path: str, cameras: List[dict]) -> dict:

@@ -39,7 +39,9 @@ const emptyForm = () => ({
 export default function DashboardPage() {
   const navigate = useNavigate();
   const [cameras, setCameras] = useState([]);
-  const [msg, setMsg] = useState('加载中…');
+  const [listLoading, setListLoading] = useState(true);
+  const [probing, setProbing] = useState(false);
+  const [msg, setMsg] = useState('');
   const [msgErr, setMsgErr] = useState(false);
   const [refreshingId, setRefreshingId] = useState(null);
   const [inferLoadingId, setInferLoadingId] = useState(null);
@@ -57,43 +59,83 @@ export default function DashboardPage() {
     }
   };
 
-  const loadCameras = useCallback(async () => {
+  const applyCameraItems = useCallback((items) => {
+    if (!Array.isArray(items)) return false;
+    const now = Date.now() / 1000;
+    const mapped = items.map((item) => ({
+      ...item,
+      _syncedAt: now,
+      _displayActivity: item.activity_seconds ?? 0,
+    }));
+    setCameras(mapped);
+    setSetupCamera((prev) => {
+      if (!prev) return prev;
+      return mapped.find((c) => c.id === prev.id) || prev;
+    });
+    setMsg(`共 ${items.length} 路摄像头 · 上次更新 ${new Date().toLocaleTimeString()}`);
+    setMsgErr(false);
+    return true;
+  }, []);
+
+  const loadCameras = useCallback(async ({ probe = false } = {}) => {
+    if (probe) setProbing(true);
     try {
-      const data = await apiGet('/api/cameras');
+      const qs = probe ? '' : '?probe=false';
+      const data = await apiGet(`/api/cameras${qs}`);
       if (data.status !== 'success' || !Array.isArray(data.items)) {
         setMsg(formatUserError(data.error) || '加载失败');
         setMsgErr(true);
-        return;
+        return false;
       }
-      const now = Date.now() / 1000;
-      const items = data.items.map((item) => ({
-        ...item,
-        _syncedAt: now,
-        _displayActivity: item.activity_seconds,
-      }));
-      setCameras(items);
-      setSetupCamera((prev) => {
-        if (!prev) return prev;
-        return items.find((c) => c.id === prev.id) || prev;
-      });
-      setMsg(`共 ${data.items.length} 路摄像头 · 上次更新 ${new Date().toLocaleTimeString()}`);
-      setMsgErr(false);
+      applyCameraItems(data.items);
+      return true;
     } catch (e) {
       setMsg(formatUserError(e.message) || '无法连接服务器');
       setMsgErr(true);
+      return false;
+    } finally {
+      if (probe) {
+        setProbing(false);
+      } else {
+        setListLoading(false);
+      }
     }
-  }, []);
+  }, [applyCameraItems]);
+
+  const refreshListFastThenProbe = useCallback(async () => {
+    await loadCameras({ probe: false });
+    void loadCameras({ probe: true });
+  }, [loadCameras]);
+
+  const refreshCamerasAfterMutation = useCallback(
+    async (mutationData) => {
+      if (applyCameraItems(mutationData?.items)) {
+        setListLoading(false);
+        void loadCameras({ probe: true });
+        return;
+      }
+      await refreshListFastThenProbe();
+    },
+    [applyCameraItems, refreshListFastThenProbe],
+  );
 
   useEffect(() => {
-    loadCameras();
-    const poll = setInterval(loadCameras, POLL_MS);
-    return () => clearInterval(poll);
+    let cancelled = false;
+    (async () => {
+      await loadCameras({ probe: false });
+      if (!cancelled) void loadCameras({ probe: true });
+    })();
+    const poll = setInterval(() => loadCameras({ probe: false }), POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(poll);
+    };
   }, [loadCameras]);
 
   useEffect(() => {
     const hasStarting = cameras.some((c) => c.inference?.status === 'starting');
     if (!hasStarting) return undefined;
-    const fast = setInterval(loadCameras, 5000);
+    const fast = setInterval(() => loadCameras({ probe: false }), 5000);
     return () => clearInterval(fast);
   }, [cameras, loadCameras]);
 
@@ -212,7 +254,7 @@ export default function DashboardPage() {
       }
       applyConfigHint(data);
       closeDrawer();
-      await loadCameras();
+      await refreshCamerasAfterMutation(data);
     } catch (err) {
       alert(formatUserError(err.message) || '保存失败');
     } finally {
@@ -232,7 +274,7 @@ export default function DashboardPage() {
       }
       applyConfigHint(data);
       closeDrawer();
-      await loadCameras();
+      await refreshCamerasAfterMutation(data);
     } catch (err) {
       alert(formatUserError(err.message) || '删除失败');
     } finally {
@@ -307,7 +349,10 @@ export default function DashboardPage() {
         <h1 className="page-title">摄像头总览</h1>
 
         <div className="toolbar">
-          <span className={`msg ${msgErr ? 'err' : ''}`}>{msg}</span>
+          <span className={`msg ${msgErr ? 'err' : ''}`}>
+            {listLoading ? '加载列表…' : msg}
+            {probing && !listLoading ? ' · 正在探测在线状态' : ''}
+          </span>
           <div className="toolbar-actions">
             <button
               type="button"
@@ -321,9 +366,10 @@ export default function DashboardPage() {
             <button
               type="button"
               className="btn-icon"
-              title="刷新状态"
-              aria-label="刷新状态"
-              onClick={loadCameras}
+              title="刷新列表"
+              aria-label="刷新列表"
+              disabled={listLoading || probing}
+              onClick={() => refreshListFastThenProbe()}
             >
               ↻
             </button>
@@ -333,7 +379,9 @@ export default function DashboardPage() {
         {configHint && <div className="config-hint">{configHint}</div>}
 
         <div className="grid">
-          {!cameras.length ? (
+          {listLoading ? (
+            <div className="empty grid-status">加载中…</div>
+          ) : !cameras.length ? (
             <div className="empty">暂无摄像头，点击「添加摄像头」开始配置。</div>
           ) : (
             cameras.map((cam) => (
