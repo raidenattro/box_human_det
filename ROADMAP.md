@@ -33,3 +33,16 @@
 3. **UI** — `LiveHub` 合并 pose + event → SSE；推理容器不再做碰撞/回调
 
 部署：`docker compose --profile ui up` 含 redis + ui + event-worker；按摄像头 `inference/start` 起推理容器。
+
+## 新需求
+
+1. 需要一个页面，把所有区域/货架全部显示出来，以Camera为单位/成组。我需要看到所有的事件被识别到的全局界面。可以是一个大表格/矩阵？
+
+2. 需要澄清，开启检测后到底开启了什么？我docker ps没看到容器有增加；
+
+3. 监控界面上的“开启检测”开关，旁边默认显示一横，表示全局没有配模型？但实际上全局配好了的，有些摄像头有问题，不全是。另外摄像头个性配置中选择了指定的算法，监控界面上也不会变，很奇怪！需要核实并解决。
+
+4. 模型框架单核 FPS多核 FPS备注
+RTMPose-tMMPose / ONNX~25–35~60–90最轻量，工业部署首选
+RTMPose-sMMPose / ONNX~15–25~40–60精度/速度均衡
+MoveNet LightningTFLite~25–40~50–80Google官方，移动端优化好

@@ -66,11 +66,12 @@ services:
       - MEDIAMTX_WEBRTC_PORT=${MEDIAMTX_WEBRTC_PORT:-8889}
       - MEDIAMTX_HLS_BASE=http://mediamtx:8888
       - MEDIAMTX_WEBRTC_BASE=http://mediamtx:8889
+      - RTSP_CAPTURE_BACKEND=opencv
       - HOST_PROJECT_ROOT=${PWD}
       - INFERENCE_IMAGE=${INFERENCE_IMAGE:-visual-dps-inference-lite:latest}
       - INFERENCE_LITE_IMAGE=${INFERENCE_LITE_IMAGE:-visual-dps-inference-lite:latest}
       - INFERENCE_LITE_GPU_IMAGE=${INFERENCE_LITE_GPU_IMAGE:-visual-dps-inference-lite-gpu:latest}
-      - INFERENCE_USE_GPU=${INFERENCE_USE_GPU:-1}
+      - INFERENCE_USE_GPU=${INFERENCE_USE_GPU:-0}
       - INFERENCE_BACKEND=${INFERENCE_BACKEND:-mediapipe}
       - INFERENCE_JSON_PATH=localdata/json/precise_boxes_new.json
       - INFERENCE_STATUS_DIR=/app/localdata/inference

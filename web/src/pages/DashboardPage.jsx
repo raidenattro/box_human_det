@@ -326,12 +326,19 @@ export default function DashboardPage() {
   const captureFrame = async (cam) => {
     setRefreshingId(cam.id);
     try {
-      const data = await apiPost('/api/get_camera_frame', { url: cam.url });
+      const data = await apiPost(`/api/cameras/${encodeURIComponent(cam.id)}/capture`, {});
       if (data.status !== 'success') {
         alert(formatUserError(data.error) || '抓帧失败');
         return;
       }
-      await loadCameras();
+      const patch = {
+        has_thumbnail: true,
+        last_frame_at: data.last_frame_at ?? Date.now() / 1000,
+        online: data.online ?? cam.online,
+        activity_seconds: data.activity_seconds ?? cam.activity_seconds,
+      };
+      setCameras((prev) => prev.map((c) => (c.id === cam.id ? { ...c, ...patch } : c)));
+      setSetupCamera((prev) => (prev?.id === cam.id ? { ...prev, ...patch } : prev));
     } catch (e) {
       alert(formatUserError(e.message) || '抓帧失败');
     } finally {

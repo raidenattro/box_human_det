@@ -126,6 +126,16 @@ export default function CameraSetupDrawer({
                     />
                   </div>
                 </div>
+                <div className="detail-row detail-row--switch">
+                  <span className="detail-label">启用该路摄像头</span>
+                  <div className="detail-row-control">
+                    <InferenceToggle
+                      on={form.enabled}
+                      title={form.enabled ? '关闭该路摄像头' : '启用该路摄像头'}
+                      onToggle={(turnOn) => onChange('enabled', turnOn)}
+                    />
+                  </div>
+                </div>
               </section>
             </>
           )}
@@ -163,26 +173,23 @@ export default function CameraSetupDrawer({
                 <input
                   value={form.url}
                   onChange={(e) => onChange('url', e.target.value)}
-                  placeholder="rtsp://192.168.1.100:554/stream"
+                  placeholder="rtsp://127.0.0.1:8554/cam8"
                   required
                 />
               </label>
-              <div className="drawer-form-row drawer-form-row--switch">
-                <span className="drawer-form-row-label">启用该路摄像头</span>
-                <label className="drawer-inline-switch">
-                  <input
-                    type="checkbox"
-                    className="drawer-inline-switch-input"
-                    checked={form.enabled}
-                    onChange={(e) => onChange('enabled', e.target.checked)}
-                  />
-                  <span className="drawer-inline-switch-track" aria-hidden />
-                </label>
-              </div>
+              {isCreate ? (
+                <div className="detail-row detail-row--switch drawer-form-enabled-row">
+                  <span className="detail-label">启用该路摄像头</span>
+                  <div className="detail-row-control">
+                    <InferenceToggle
+                      on={form.enabled}
+                      title={form.enabled ? '关闭该路摄像头' : '启用该路摄像头'}
+                      onToggle={(turnOn) => onChange('enabled', turnOn)}
+                    />
+                  </div>
+                </div>
+              ) : null}
             </form>
-            <p className="drawer-hint">
-              填写摄像头或录像机提供的 RTSP 地址，系统将直接拉流，无需向本系统推流。
-            </p>
           </section>
 
           {!isCreate && (

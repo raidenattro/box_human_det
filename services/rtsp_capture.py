@@ -242,14 +242,22 @@ def read_latest_frame(cap, max_drain: int | None = None) -> Tuple[bool, np.ndarr
 
 
 def read_rtsp_frame_once(url: str, timeout_sec: float | None = None) -> np.ndarray | None:
-    """低频抓一帧（UI 缩略图等）。"""
+    """低频抓一帧（UI 缩略图等）。Docker 内 FFmpeg 硬解常能连上 RTSP 但读不到帧，此处固定 OpenCV。"""
     if timeout_sec is not None:
         os.environ["RTSP_OPEN_TIMEOUT_SEC"] = str(timeout_sec)
-    cap = open_rtsp_capture(url, buffer_size=1)
+    prev_backend = os.environ.get("RTSP_CAPTURE_BACKEND")
+    os.environ["RTSP_CAPTURE_BACKEND"] = "opencv"
     try:
-        if not cap.isOpened():
-            return None
-        ok, frame, _ = read_latest_frame(cap, max_drain=4)
-        return frame if ok and frame is not None else None
+        cap = open_rtsp_capture(url, buffer_size=1)
+        try:
+            if not cap.isOpened():
+                return None
+            ok, frame, _ = read_latest_frame(cap, max_drain=4)
+            return frame if ok and frame is not None else None
+        finally:
+            cap.release()
     finally:
-        cap.release()
+        if prev_backend is None:
+            os.environ.pop("RTSP_CAPTURE_BACKEND", None)
+        else:
+            os.environ["RTSP_CAPTURE_BACKEND"] = prev_backend

@@ -24,20 +24,30 @@ export default function AnnotateControls({ tool, embedded = false }) {
         </div>
       ) : null}
 
-      <div className="group">
+      <div className="group annotate-grid-group">
+        <div className="annotate-section-head">
+          <span className="group-title">货位矩阵</span>
+          <button
+            type="button"
+            className="monitor-panel-btn monitor-panel-btn-primary"
+            disabled={!shelfReady}
+            title={
+              shelfReady
+                ? gridReady
+                  ? `按当前 ${tool.gridRows}×${tool.gridCols} 重新生成货位`
+                  : `生成 ${tool.gridRows}×${tool.gridCols} 货位`
+                : '请先在画面上标定货架四角'
+            }
+            onClick={tool.confirmGenerateGrid}
+          >
+            {gridReady ? `重新生成 ${tool.gridRows}×${tool.gridCols}` : '生成货位'}
+          </button>
+        </div>
         <GridPicker
           rows={tool.gridRows}
           cols={tool.gridCols}
           onChange={tool.setGridDimensions}
         />
-        <button
-          type="button"
-          className="annotate-btn-block annotate-btn-primary"
-          disabled={!shelfReady}
-          onClick={tool.confirmGenerateGrid}
-        >
-          {gridReady ? `重新生成 ${tool.gridRows}×${tool.gridCols}` : '确认生成货位'}
-        </button>
       </div>
 
       {!embedded ? (
@@ -61,12 +71,30 @@ export default function AnnotateControls({ tool, embedded = false }) {
 
       {gridReady ? (
         <div className="annotate-box-panel group">
-          <div className="group-title">货位编号</div>
           {selected ? (
             <>
-              <p className="annotate-box-pos">
-                第 {selected.row} 层 · 第 {selected.col} 列
-              </p>
+              <div className="annotate-section-head annotate-box-head-row">
+                <div className="annotate-box-head-text">
+                  <span className="group-title">货位编号</span>
+                  <p className="annotate-box-pos">
+                    第 {selected.row} 层 · 第 {selected.col} 列
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="monitor-panel-btn monitor-panel-btn-danger"
+                  title={`删除第 ${selected.row} 层 · 第 ${selected.col} 列货位`}
+                  onClick={() => {
+                    if (
+                      window.confirm(`确定删除第 ${selected.row} 层 · 第 ${selected.col} 列货位？`)
+                    ) {
+                      tool.deleteSelectedCell();
+                    }
+                  }}
+                >
+                  删除
+                </button>
+              </div>
               <label className="field annotate-box-id-field">
                 编号
                 <input
@@ -78,22 +106,12 @@ export default function AnnotateControls({ tool, embedded = false }) {
                   }
                 />
               </label>
-              <button
-                type="button"
-                className="annotate-btn-block annotate-btn-delete"
-                onClick={() => {
-                  if (
-                    window.confirm(`确定删除第 ${selected.row} 层 · 第 ${selected.col} 列货位？`)
-                  ) {
-                    tool.deleteSelectedCell();
-                  }
-                }}
-              >
-                删除货位
-              </button>
             </>
           ) : (
-            <p className="annotate-box-empty-hint">点击画面中的货位进行编辑</p>
+            <>
+              <span className="group-title">货位编号</span>
+              <p className="annotate-box-empty-hint">点击画面中的货位进行编辑</p>
+            </>
           )}
         </div>
       ) : null}

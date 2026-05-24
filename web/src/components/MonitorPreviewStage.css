@@ -146,6 +146,83 @@
   max-height: none;
 }
 
+.monitor-panel-drawer-body .group-title {
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: #9ab1c4;
+  text-transform: uppercase;
+  margin: 0;
+}
+
+.monitor-panel-drawer-body .annotate-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  min-width: 0;
+}
+
+.monitor-panel-drawer-body .annotate-box-head-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.monitor-panel-drawer-body .annotate-box-head-row {
+  align-items: flex-start;
+}
+
+.monitor-panel-drawer-body .annotate-box-head-row .annotate-box-pos {
+  margin-top: 2px;
+}
+
+.monitor-panel-drawer-body .annotate-grid-group .grid-picker {
+  margin-top: 2px;
+}
+
+.monitor-panel-drawer-body .monitor-panel-btn {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.25;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.monitor-panel-drawer-body .monitor-panel-btn-primary {
+  border: none;
+  background: #00d4aa;
+  color: #072018;
+}
+
+.monitor-panel-drawer-body .monitor-panel-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.monitor-panel-drawer-body .monitor-panel-btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.monitor-panel-drawer-body .monitor-panel-btn-danger {
+  border: 1px solid rgba(255, 120, 120, 0.4);
+  background: rgba(30, 20, 22, 0.6);
+  color: #ff8a8a;
+  padding: 4px 8px;
+  font-size: 0.7rem;
+}
+
+.monitor-panel-drawer-body .monitor-panel-btn-danger:hover {
+  background: rgba(231, 76, 60, 0.15);
+  border-color: #e74c3c;
+}
+
+.monitor-panel-drawer-body .annotate-box-id-field {
+  margin-top: 4px;
+}
+
 .monitor-panel-content {
   display: flex;
   flex-direction: column;

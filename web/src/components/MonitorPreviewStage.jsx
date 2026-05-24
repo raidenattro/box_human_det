@@ -386,13 +386,7 @@ export default function MonitorPreviewStage({
   }, [shelves, boxes, gridShape, roiContext]);
 
   const skeletonOverlay = useMemo(() => {
-    if (
-      annotateMode ||
-      !showSkeletonLayer ||
-      !inferRunning ||
-      !layout ||
-      !liveSkeletons.length
-    ) {
+    if (annotateMode || !showSkeletonLayer || !layout || !liveSkeletons.length) {
       return null;
     }
     const fw = layout.frameW;
@@ -423,15 +417,7 @@ export default function MonitorPreviewStage({
       });
       return lines.length ? <g key={`skel-${pi}`}>{lines}</g> : null;
     });
-  }, [
-    annotateMode,
-    showSkeletonLayer,
-    inferRunning,
-    layout,
-    liveSkeletons,
-    liveInferWidth,
-    liveInferHeight,
-  ]);
+  }, [annotateMode, showSkeletonLayer, layout, liveSkeletons, liveInferWidth, liveInferHeight]);
 
   const shelfOutlines = useMemo(() => {
     if (!showRoiLayer && !annotateMode) return [];
@@ -599,6 +585,9 @@ export default function MonitorPreviewStage({
               </div>
             </div>
             {streamError ? <div className="monitor-stream-hint">{streamError}</div> : null}
+            {!annotateMode && showSkeletonLayer && inferRunning && !liveSkeletons.length ? (
+              <div className="monitor-stream-hint">骨架已开启，等待检测姿态数据…</div>
+            ) : null}
           </>
         ) : (
           <div className="monitor-stage-empty">{busy ? '正在加载画面…' : emptyText}</div>

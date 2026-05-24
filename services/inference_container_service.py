@@ -69,7 +69,13 @@ def _read_worker_status(camera_id: str) -> dict | None:
         return None
 
 
-def _map_docker_status(docker_status: str, exit_code: int | None = None) -> str:
+def _map_docker_status(
+    docker_status: str,
+    exit_code: int | None = None,
+    state_error: str = "",
+) -> str:
+    if str(state_error or "").strip():
+        return "error"
     status = (docker_status or "").lower()
     if status == "running":
         return "running"
@@ -125,8 +131,10 @@ def _compose_inference_status(
         return base
 
     try:
-        exit_code = container.attrs.get("State", {}).get("ExitCode")
-        mapped = _map_docker_status(container.status, exit_code)
+        state = container.attrs.get("State", {}) or {}
+        exit_code = state.get("ExitCode")
+        state_error = str(state.get("Error") or "").strip()
+        mapped = _map_docker_status(container.status, exit_code, state_error)
         base.update(
             {
                 "status": mapped,
@@ -138,9 +146,17 @@ def _compose_inference_status(
         if mapped == "running" and worker.get("state") == "running":
             base["message"] = worker.get("message") or "推理运行中"
         elif mapped == "error":
-            if fetch_error_logs:
-                container.logs(tail=20)
-            base["message"] = "检测服务异常退出，请重试"
+            if state_error:
+                base["message"] = state_error[:240]
+            elif fetch_error_logs:
+                try:
+                    tail = container.logs(tail=20).decode("utf-8", errors="replace").strip()
+                    if tail:
+                        base["message"] = tail.splitlines()[-1][:240]
+                except Exception:
+                    base["message"] = "检测服务异常退出，请重试"
+            else:
+                base["message"] = "检测服务异常退出，请重试"
         return base
     except Exception as exc:
         base["status"] = "error"
@@ -292,10 +308,10 @@ def start_inference_container(camera: dict, request=None) -> dict:
         env["REDIS_HOST"] = redis_host
         env["REDIS_PORT"] = redis_port
 
+    import docker
+
     device_requests = []
-    use_gpu = os.environ.get("INFERENCE_USE_GPU", "1") == "1"
-    if backend == "mediapipe":
-        use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
+    use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
     if use_gpu:
         device_requests.append(docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]]))
 
@@ -314,22 +330,46 @@ def start_inference_container(camera: dict, request=None) -> dict:
     if docker_network:
         run_kwargs["network"] = docker_network
 
-    try:
-        container = client.containers.run(**run_kwargs)
-    except Exception as exc:
-        import docker
+    def _run_container(kwargs: dict):
+        return client.containers.run(**kwargs)
 
+    def _cleanup_stale(name: str) -> None:
+        try:
+            stale = client.containers.get(name)
+            if stale.status != "running":
+                stale.remove(force=True)
+        except docker.errors.NotFound:
+            pass
+
+    try:
+        container = _run_container(run_kwargs)
+    except Exception as exc:
         err = str(exc)
-        if isinstance(exc, docker.errors.ImageNotFound) or "No such image" in err:
-            return {
-                "error": (
-                    "未找到推理 Docker 镜像。本地请先执行: "
-                    "./scripts/build-inference-lite-image.sh"
-                )
-            }
-        if "HOST_PROJECT_ROOT" in err:
-            return {"error": "未配置 HOST_PROJECT_ROOT，无法挂载数据目录启动检测"}
-        return {"error": f"启动检测失败: {err[:200]}"}
+        err_lower = err.lower()
+        gpu_fail = device_requests and any(
+            token in err_lower
+            for token in ("gpu", "nvidia", "device driver", "capabilities")
+        )
+        if gpu_fail:
+            _cleanup_stale(name)
+            cpu_kwargs = {**run_kwargs, "device_requests": None}
+            try:
+                container = _run_container(cpu_kwargs)
+            except Exception as retry_exc:
+                err = str(retry_exc)
+            else:
+                exc = None
+        if exc is not None:
+            if isinstance(exc, docker.errors.ImageNotFound) or "No such image" in err:
+                return {
+                    "error": (
+                        "未找到推理 Docker 镜像。本地请先执行: "
+                        "./scripts/build-inference-lite-image.sh"
+                    )
+                }
+            if "HOST_PROJECT_ROOT" in err:
+                return {"error": "未配置 HOST_PROJECT_ROOT，无法挂载数据目录启动检测"}
+            return {"error": f"启动检测失败: {err[:200]}"}
 
     os.makedirs(INFERENCE_STATUS_DIR, exist_ok=True)
     with open(_status_file(camera_id), "w", encoding="utf-8") as f:

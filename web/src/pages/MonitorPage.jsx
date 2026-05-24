@@ -700,8 +700,10 @@ export default function MonitorPage() {
       return undefined;
     }
 
+    let cancelled = false;
+
     const applyLiveFrame = (data) => {
-      if (!data || typeof data !== 'object') return;
+      if (cancelled || !data || typeof data !== 'object') return;
       setLiveHits(Array.isArray(data.collisions) ? data.collisions : []);
       setLiveAlarms(Array.isArray(data.alarm_collisions) ? data.alarm_collisions : []);
       setLiveSkeletons(Array.isArray(data.skeletons) ? data.skeletons : []);
@@ -717,7 +719,10 @@ export default function MonitorPage() {
         /* EventSource 会自动重连 */
       },
     });
-    return closeStream;
+    return () => {
+      cancelled = true;
+      closeStream();
+    };
   }, [cameraId, viewMode, monitorCamera?.inference?.status]);
 
   useEffect(() => {
