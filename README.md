@@ -6,6 +6,8 @@
 
 **接手开发请先阅读 [HANDOFF.md](./HANDOFF.md)**（合并思路、原则与后续入口）。
 
+**现场使用请阅读 [docs/USER_MANUAL.md](./docs/USER_MANUAL.md)**（安装、FFmpeg 推流、标注、开启检测、监控与排障，含截图）。
+
 ## 页面
 
 | 路径 | 说明 |

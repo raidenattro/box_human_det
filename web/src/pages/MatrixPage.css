@@ -117,17 +117,6 @@
   justify-content: flex-end;
 }
 
-.matrix-badge.badge-slot {
-  min-width: 3.4rem;
-  text-align: center;
-  box-sizing: border-box;
-}
-
-.matrix-badge.badge-slot.is-idle {
-  visibility: hidden;
-  pointer-events: none;
-}
-
 .matrix-badge {
   font-size: 0.72rem;
   padding: 2px 8px;
@@ -156,16 +145,6 @@
 
 .matrix-badge.infer-error {
   color: #ff6b81;
-}
-
-.matrix-badge.hit {
-  color: #f39c12;
-  border-color: rgba(243, 156, 18, 0.4);
-}
-
-.matrix-badge.alarm {
-  color: #ff4757;
-  border-color: rgba(255, 71, 87, 0.45);
 }
 
 .matrix-badge.warn {

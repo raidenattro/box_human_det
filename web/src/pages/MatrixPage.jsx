@@ -117,9 +117,6 @@ function MatrixCell({ cell, cameraId, compact = false }) {
 
 function CameraBlock({ cam }) {
   const infer = cam.inference?.status || 'stopped';
-  const live = cam.live || {};
-  const hitN = (live.collisions || []).length;
-  const alarmN = (live.alarm_collisions || []).length;
 
   return (
     <section className="matrix-camera" id={`camera-${cam.id}`}>
@@ -142,18 +139,6 @@ function CameraBlock({ cam }) {
           ) : (
             <span className="matrix-badge warn">无标注</span>
           )}
-          <span
-            className={`matrix-badge hit badge-slot${hitN > 0 ? '' : ' is-idle'}`}
-            aria-hidden={hitN === 0}
-          >
-            碰撞 {hitN}
-          </span>
-          <span
-            className={`matrix-badge alarm badge-slot${alarmN > 0 ? '' : ' is-idle'}`}
-            aria-hidden={alarmN === 0}
-          >
-            告警 {alarmN}
-          </span>
         </div>
       </header>
 
