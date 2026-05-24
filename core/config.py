@@ -98,10 +98,28 @@ def _validate_config_or_raise(cfg: dict, config_file: str):
     except Exception:
         errors.append("字段必须是整数: server.port")
 
+    models_cfg = cfg.get("models")
+    if isinstance(models_cfg, dict):
+        backend = str(models_cfg.get("backend", "mmpose")).strip().lower()
+        if backend not in ("mmpose", "mediapipe", "lite", "mp", "mm", "default"):
+            errors.append(
+                f"models.backend 无效: {backend}，可选 mmpose（默认）或 mediapipe（轻量本地测试）"
+            )
+
     if errors:
         msg = [f"配置文件校验失败: {config_file}"]
         msg.extend([f"- {e}" for e in errors])
         raise SystemExit("\n".join(msg))
+
+
+def try_load_app_config(config_file: str = CONFIG_FILE) -> dict | None:
+    """加载配置；文件缺失或校验失败时返回 None（API 路由用，避免 SystemExit）。"""
+    if not os.path.isfile(config_file):
+        return None
+    try:
+        return load_app_config(config_file)
+    except SystemExit:
+        return None
 
 
 def load_app_config(config_file: str = CONFIG_FILE) -> dict:

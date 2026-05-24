@@ -18,11 +18,22 @@
         "capture_height": 480
     },
     "models": {
+        "backend": "mmpose",
         "device": "cuda:0",
         "det_config": "configs/mmdet/rtmdet_m_640-8xb32_coco-person.py",
         "det_checkpoint": "https://download.openmmlab.com/mmpose/v1/projects/rtmpose/rtmdet_m_8xb32-100e_coco-obj365-person-235e8209.pth",
         "pose_config": "configs/mmpose/rtmpose-m_8xb256-420e_body8-256x192.py",
-        "pose_checkpoint": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.pth"
+        "pose_checkpoint": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.pth",
+        "mediapipe_model_path": "localdata/models/pose_landmarker_lite.task",
+        "mediapipe_model_url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+        "mediapipe_num_poses": 4,
+        "rtmpose_onnx_det_path": "localdata/models/rtmpose_onnx/rtmdet_nano/end2end.onnx",
+        "rtmpose_onnx_det_url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmdet_nano_8xb32-100e_coco-obj365-person-05d8511e.zip",
+        "rtmpose_onnx_pose_path": "localdata/models/rtmpose_onnx/rtmpose_t/end2end.onnx",
+        "rtmpose_onnx_pose_url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504.zip",
+        "rtmpose_onnx_det_size": [320, 320],
+        "rtmpose_onnx_pose_size": [192, 256],
+        "rtmpose_onnx_device": "cpu"
     },
     "inference": {
         "frame_rate": 15,
@@ -57,8 +68,8 @@
         "request_timeout_ms": 800,
         "queue_size": 1000,
         "cooldown_ms": 500,
-        "retry_times": 2,
-        "retry_backoff_ms": 100,
+        "retry_times": 0,
+        "retry_backoff_ms": 0,
         "max_records": 5000,
         "payload_template": {
             "taskId": "{task_id}",
@@ -74,5 +85,24 @@
     "server": {
         "host": "0.0.0.0",
         "port": 8045
+    },
+    "auth": {
+        "enabled": true,
+        "session_ttl_hours": 24,
+        "local": {
+            "enabled": true,
+            "users_file": "localdata/auth_users.json"
+        },
+        "oauth2": {
+            "enabled": false,
+            "display_name": "企业单点登录",
+            "client_id": "",
+            "client_secret_env": "OAUTH2_CLIENT_SECRET",
+            "authorize_url": "",
+            "token_url": "",
+            "userinfo_url": "",
+            "scopes": "openid profile email",
+            "redirect_path": "/api/auth/oauth2/callback"
+        }
     }
 }

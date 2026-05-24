@@ -1,0 +1,67 @@
+# 轻量推理 Worker：MediaPipe / RTMPose-t ONNX（CPU），无 PyTorch/MMPose。
+# 构建: docker compose --profile inference-lite build visual-dps-inference-lite
+
+FROM python:3.10-slim
+
+ARG APT_MIRROR=mirrors.aliyun.com
+ARG PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    INFERENCE_BACKEND=mediapipe \
+    INFERENCE_USE_GPU=0 \
+    RTSP_CAPTURE_BACKEND=auto
+
+WORKDIR /app
+
+COPY docker/debian-mirror.sh /tmp/debian-mirror.sh
+RUN sh /tmp/debian-mirror.sh "${APT_MIRROR}" && rm /tmp/debian-mirror.sh
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libgl1 \
+    libglib2.0-0 \
+    libgles2 \
+    libegl1 \
+    libgbm1 \
+    wget \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/pip-install.sh /tmp/pip-install.sh
+RUN sh /tmp/pip-install.sh "${PIP_INDEX}" --upgrade pip \
+    && sh /tmp/pip-install.sh "${PIP_INDEX}" \
+        mediapipe \
+        onnxruntime \
+        rtmlib \
+        opencv-python-headless \
+        numpy \
+        fastapi \
+        "uvicorn[standard]" \
+        python-multipart \
+        httpx \
+        itsdangerous \
+        redis \
+        "passlib[bcrypt]" \
+        "bcrypt<4.1"
+
+ARG MEDIAPIPE_MODEL_URL=https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
+ARG RTMPOSE_ONNX_DET_ZIP=https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmdet_nano_8xb32-100e_coco-obj365-person-05d8511e.zip
+ARG RTMPOSE_ONNX_POSE_ZIP=https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504.zip
+RUN mkdir -p /app/localdata/models/pose_landmarker \
+    /app/localdata/models/rtmpose_onnx/rtmdet_nano \
+    /app/localdata/models/rtmpose_onnx/rtmpose_t \
+    && wget -q -O /app/localdata/models/pose_landmarker_lite.task "${MEDIAPIPE_MODEL_URL}" \
+    && wget -q -O /tmp/rtmdet_nano.zip "${RTMPOSE_ONNX_DET_ZIP}" \
+    && unzip -q -j /tmp/rtmdet_nano.zip '*/end2end.onnx' -d /app/localdata/models/rtmpose_onnx/rtmdet_nano \
+    && wget -q -O /tmp/rtmpose_t.zip "${RTMPOSE_ONNX_POSE_ZIP}" \
+    && unzip -q -j /tmp/rtmpose_t.zip '*/end2end.onnx' -d /app/localdata/models/rtmpose_onnx/rtmpose_t \
+    && rm -f /tmp/rtmdet_nano.zip /tmp/rtmpose_t.zip
+
+COPY services ./services
+COPY core ./core
+COPY inference_worker.py ./inference_worker.py
+COPY app_config.json ./app_config.json
+
+CMD ["python", "inference_worker.py"]

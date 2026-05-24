@@ -25,7 +25,12 @@ RUN pip install \
     python-multipart \
     opencv-python-headless \
     numpy \
-    psutil
+    psutil \
+    "passlib[bcrypt]" \
+    "bcrypt<4.1" \
+    httpx \
+    itsdangerous \
+    redis
 
 COPY . /app
 

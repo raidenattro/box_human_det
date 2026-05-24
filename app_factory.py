@@ -4,19 +4,24 @@ import json
 import os
 
 from fastapi import APIRouter, FastAPI, File, UploadFile, WebSocket
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
+from core.auth_middleware import AuthMiddleware
+from core.auth_settings import load_auth_settings
 from core.config import load_app_config
+from core.spa_static import mount_spa, register_spa_fallback
+from services.admin_routes import register_admin_routes
+from services.auth_routes import register_auth_routes
+from services.auth_service import ensure_users_file
+from services.log_store import init_log_db
 from core.state import STATE
 from services.annotation_service import flatten_annotation_boxes, load_annotation, save_annotation
 from services.callback_reporter import CollisionCallbackReporter
-from services.camera_service import (
-    capture_camera_frame,
-    get_last_frame_b64,
-    load_camera_ips,
-    save_camera_ips,
-)
+from services.camera_routes import register_camera_routes
+from services.camera_service import get_last_frame_b64
+from services.camera_store import load_cameras
 from services.inference_service import InferenceService
+from services.live_bus import live_hub
 from services.video_service import get_first_frame_b64, handle_video_upload, initialize_source_from_config
 
 
@@ -31,27 +36,52 @@ def create_app():
         default_json_file=paths["default_json_file"],
     )
     callback_reporter = CollisionCallbackReporter(app_config.get("reporting", {}))
-    inference_service = InferenceService(app_config, STATE, callback_reporter=callback_reporter)
+    inference_service = InferenceService(app_config, STATE)
     app = FastAPI()
     api_router = APIRouter(prefix="/api")
+    auth_settings = load_auth_settings(app_config)
+    register_auth_routes(api_router, app_config)
+    register_admin_routes(api_router, app_config)
+    app.add_middleware(AuthMiddleware, lambda: auth_settings)
 
     @app.on_event("startup")
     async def startup_event():
+        init_log_db()
+        if auth_settings["enabled"] and auth_settings["local"]["enabled"]:
+            ensure_users_file(auth_settings["local"]["users_file"])
         await callback_reporter.start()
+        await live_hub.start()
         if STATE.source_type == "stream" and STATE.video_path:
             await inference_service.start_inference()
 
     @app.on_event("shutdown")
     async def shutdown_event():
+        await live_hub.stop()
         await callback_reporter.stop()
 
-    @app.get("/")
-    async def read_root():
-        return FileResponse(paths["index_html"])
+    frames_dir = os.path.join(paths["base_localdata_dir"], "frames")
+    mediamtx_config_path = os.environ.get(
+        "MEDIAMTX_CONFIG_PATH",
+        os.path.join(paths["base_localdata_dir"], "mediamtx.yml"),
+    )
+    frontend_dist = os.environ.get("FRONTEND_DIST", os.path.join("web", "dist"))
+    spa_enabled = os.path.isfile(os.path.join(frontend_dist, "index.html"))
+    if spa_enabled:
+        mount_spa(app, frontend_dist)
+    else:
+        dashboard_html = os.path.join(paths["templates_dir"], "dashboard.html")
 
-    @app.get("/annotate")
-    async def read_annotate():
-        return FileResponse(paths["annotation_html"])
+        @app.get("/")
+        async def read_dashboard():
+            return FileResponse(dashboard_html)
+
+        @app.get("/monitor")
+        async def read_monitor():
+            return FileResponse(paths["index_html"])
+
+        @app.get("/annotate")
+        async def read_annotate():
+            return FileResponse(paths["annotation_html"])
 
     @api_router.post("/upload_video")
     async def upload_video(file: UploadFile = File(...)):
@@ -85,55 +115,16 @@ def create_app():
             "debug_visual_enabled": debug_visual_enabled,
         }
 
-    @api_router.get("/camera_ips")
-    async def get_camera_ips():
-        items = load_camera_ips(paths["camera_ips_file"])
-        return {"status": "success", "items": items}
-
-    @api_router.post("/camera_ips")
-    async def add_camera_ip(data: dict):
-        url = str(data.get("url", "")).strip()
-        name = str(data.get("name", "")).strip()
-        if not url:
-            return {"error": "url is required"}
-
-        items = load_camera_ips(paths["camera_ips_file"])
-        replaced = False
-        for item in items:
-            if item["url"] == url:
-                item["name"] = name or item["name"] or url
-                replaced = True
-                break
-        if not replaced:
-            items.append({"name": name or url, "url": url})
-
-        save_camera_ips(paths["camera_ips_file"], items)
-        return {"status": "success", "items": items}
-
-    @api_router.delete("/camera_ips")
-    async def delete_camera_ip(data: dict):
-        url = str(data.get("url", "")).strip()
-        if not url:
-            return {"error": "url is required"}
-
-        items = load_camera_ips(paths["camera_ips_file"])
-        new_items = [item for item in items if item.get("url") != url]
-        if len(new_items) == len(items):
-            return {"error": "camera ip not found"}
-
-        save_camera_ips(paths["camera_ips_file"], new_items)
-        return {"status": "success", "items": new_items}
-
-    @api_router.post("/get_camera_frame")
-    async def get_camera_frame(data: dict):
-        url = str(data.get("url", "")).strip()
-        if not url:
-            return {"error": "url is required"}
-        return capture_camera_frame(
-            url=url,
-            capture_height=int(video_cfg["capture_height"]),
-            last_frame_file=paths["last_frame_file"],
-        )
+    register_camera_routes(
+        api_router,
+        camera_ips_file=paths["camera_ips_file"],
+        frames_dir=frames_dir,
+        mediamtx_config_path=mediamtx_config_path,
+        json_dir=paths["json_dir"],
+        default_json_file=paths["default_json_file"],
+        last_frame_file=paths["last_frame_file"],
+        capture_height=int(video_cfg["capture_height"]),
+    )
 
     @api_router.get("/last_frame")
     async def last_frame():
@@ -184,5 +175,8 @@ def create_app():
         await inference_service.websocket_inference(websocket)
 
     app.include_router(api_router)
+
+    if spa_enabled:
+        register_spa_fallback(app, frontend_dist)
 
     return app, app_config

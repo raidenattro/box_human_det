@@ -6,6 +6,8 @@
 
 **接手开发请先阅读 [HANDOFF.md](./HANDOFF.md)**（合并思路、原则与后续入口）。
 
+**现场使用请阅读 [docs/USER_MANUAL.md](./docs/USER_MANUAL.md)**（安装、FFmpeg 推流、标注、开启检测、监控与排障，含截图）。
+
 ## 页面
 
 | 路径 | 说明 |
@@ -83,6 +85,23 @@ docker compose up -d --build
 
 1. 旧格式：顶层 `boxes[]`
 2. 新格式（多货架）：`shelves[].boxes[]`，含 `annotation_size`、`source_info`、`video_polygon_norm`
+
+## 轻量推理（本地测试平替）
+
+默认使用 **MMDet + MMPose**（`models.backend: mmpose`，镜像 `visual-dps-inference:latest`）。
+
+本地联调可选用 **MediaPipe Pose Lite**（CPU、镜像约数百 MB，无 PyTorch）：
+
+```bash
+./scripts/build-inference-lite-image.sh
+
+INFERENCE_IMAGE=visual-dps-inference-lite:latest \
+INFERENCE_BACKEND=mediapipe \
+  docker compose --profile ui up -d visual-dps-ui
+```
+
+或在 `app_config.json` 中设置 `"models": { "backend": "mediapipe", ... }`。  
+碰撞/告警逻辑与默认后端共用（COCO-17 肩/腕关键点），精度低于 RTMPose，仅建议开发验证。
 
 ## 后续计划
 

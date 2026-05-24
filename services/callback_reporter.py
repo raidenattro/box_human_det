@@ -67,8 +67,9 @@ class CollisionCallbackReporter:
         self.request_timeout_ms = int(cfg.get("request_timeout_ms", 800))
         self.queue_size = int(cfg.get("queue_size", 1000))
         self.cooldown_ms = int(cfg.get("cooldown_ms", 500))
-        self.retry_times = int(cfg.get("retry_times", 2))
-        self.retry_backoff_ms = int(cfg.get("retry_backoff_ms", 100))
+        # 回调失败不重试，仅尝试一次
+        self.retry_times = 0
+        self.retry_backoff_ms = 0
         self.max_records = int(cfg.get("max_records", 5000))
         self.payload_template = cfg.get("payload_template")
         self.static_fields = cfg.get("static_fields", {})
@@ -108,10 +109,7 @@ class CollisionCallbackReporter:
             self._worker_task = None
         print("✅ 碰撞回调上报 worker 已停止")
 
-    def get_record(self, event_id: str) -> dict[str, Any] | None:
-        rec = self._records.get(event_id)
-        if rec is None:
-            return None
+    def _record_to_dict(self, rec: ReportRecord) -> dict[str, Any]:
         return {
             "event_id": rec.event_id,
             "status": rec.status,
@@ -123,6 +121,44 @@ class CollisionCallbackReporter:
             "error": rec.error,
             "retry_count": rec.retry_count,
         }
+
+    def _persist_record_redis(self, event_id: str) -> None:
+        rec = self._records.get(event_id)
+        if rec is None:
+            return
+        try:
+            from services.live_bus import redis_url
+
+            import redis as sync_redis
+
+            client = sync_redis.from_url(redis_url(), decode_responses=True)
+            client.setex(
+                f"callback:record:{event_id}",
+                86400,
+                json.dumps(self._record_to_dict(rec), ensure_ascii=False),
+            )
+            client.close()
+        except Exception:
+            pass
+
+    def get_record(self, event_id: str) -> dict[str, Any] | None:
+        rec = self._records.get(event_id)
+        if rec is not None:
+            return self._record_to_dict(rec)
+        try:
+            from services.live_bus import redis_url
+
+            import redis as sync_redis
+
+            client = sync_redis.from_url(redis_url(), decode_responses=True)
+            raw = client.get(f"callback:record:{event_id}")
+            client.close()
+            if raw:
+                data = json.loads(raw)
+                return data if isinstance(data, dict) else None
+        except Exception:
+            pass
+        return None
 
     def enqueue_pick_finished(
         self,
@@ -137,15 +173,20 @@ class CollisionCallbackReporter:
             return None
 
         now_ms = int(time.time() * 1000)
-        dedupe_key = f"{upload_tag}:{box_id}"
+        box_id_text = str(box_id).strip()
+        if not box_id_text:
+            return None
+        shelf_part = str(shelf_code).strip() if shelf_code is not None else ""
+        dedupe_key = (
+            f"{upload_tag}:{shelf_part}:{box_id_text}"
+            if shelf_part
+            else f"{upload_tag}:{box_id_text}"
+        )
         last_ms = self._last_sent_at_ms_by_key.get(dedupe_key)
         if last_ms is not None and now_ms - last_ms < self.cooldown_ms:
             return None
 
         event_id = uuid.uuid4().hex
-        box_id_text = str(box_id).strip()
-        if not box_id_text:
-            return None
         context = {
             "event_id": event_id,
             "event_type": "ALGO_PICK_FINISHED",
@@ -176,6 +217,27 @@ class CollisionCallbackReporter:
 
         try:
             self._queue.put_nowait((event_id, payload))
+            from services.event_service import camera_id_from_upload_tag, record_event
+
+            record_event(
+                "alarm.triggered",
+                camera_id=camera_id_from_upload_tag(upload_tag),
+                severity="warning",
+                summary=f"货位告警 {shelf_part + ':' if shelf_part else ''}{box_id_text}",
+                detail={
+                    "box_id": box_id_text,
+                    "shelf_code": shelf_part,
+                    "frame_idx": int(frame_idx),
+                    "event_id": event_id,
+                },
+            )
+            record_event(
+                "callback.queued",
+                camera_id=camera_id_from_upload_tag(upload_tag),
+                summary="回调已入队",
+                detail={"event_id": event_id, "box_id": box_id_text},
+            )
+            self._persist_record_redis(event_id)
             return event_id
         except asyncio.QueueFull:
             record.status = "DROPPED"
@@ -229,66 +291,73 @@ class CollisionCallbackReporter:
         while self._running:
             event_id, payload = await self._queue.get()
             try:
-                await self._send_with_retry(event_id, payload)
+                await self._send_once(event_id, payload)
             finally:
                 self._queue.task_done()
 
-    async def _send_with_retry(self, event_id: str, payload: dict[str, Any]):
+    async def _send_once(self, event_id: str, payload: dict[str, Any]):
         rec = self._records.get(event_id)
         if rec is None:
             return
 
-        for attempt in range(self.retry_times + 1):
-            rec.status = "SENDING" if attempt == 0 else "RETRYING"
-            rec.retry_count = attempt
-            rec.updated_at = self._now_iso()
+        rec.status = "SENDING"
+        rec.retry_count = 0
+        rec.updated_at = self._now_iso()
 
-            print(
-                f"[CALLBACK][SEND] event_id={event_id} attempt={attempt + 1}/{self.retry_times + 1} "
-                f"url={self.callback_url} payload={json.dumps(payload, ensure_ascii=False)}"
-            )
+        print(
+            f"[CALLBACK][SEND] event_id={event_id} url={self.callback_url} "
+            f"payload={json.dumps(payload, ensure_ascii=False)}"
+        )
 
-            ok, http_status, response_body, err = await asyncio.to_thread(self._post_json, payload)
+        ok, http_status, response_body, err = await asyncio.to_thread(self._post_json, payload)
 
-            if ok:
-                rec.status = "ACK"
-                rec.http_status = http_status
-                rec.response_body = response_body
-                rec.error = None
-                rec.updated_at = self._now_iso()
-                print(
-                    f"[CALLBACK][ACK] event_id={event_id} status={http_status} "
-                    f"response={json.dumps(response_body, ensure_ascii=False)}"
-                )
-                return
-
+        if ok:
+            rec.status = "ACK"
             rec.http_status = http_status
             rec.response_body = response_body
-            rec.error = err
+            rec.error = None
             rec.updated_at = self._now_iso()
+            from services.event_service import record_event
 
-            is_client_error = http_status is not None and 400 <= http_status < 500
-            if is_client_error:
-                rec.status = "REJECT"
-                print(
-                    f"[CALLBACK][REJECT] event_id={event_id} status={http_status} "
-                    f"error={err} response={json.dumps(response_body, ensure_ascii=False)}"
-                )
-                return
+            record_event(
+                "callback.sent",
+                summary="回调成功",
+                detail={"event_id": event_id, "http_status": http_status},
+            )
+            print(
+                f"[CALLBACK][ACK] event_id={event_id} status={http_status} "
+                f"response={json.dumps(response_body, ensure_ascii=False)}"
+            )
+            self._persist_record_redis(event_id)
+            return
 
-            if attempt < self.retry_times:
-                print(
-                    f"[CALLBACK][RETRY] event_id={event_id} status={http_status} "
-                    f"error={err} next_in_ms={self.retry_backoff_ms * (2 ** attempt)}"
-                )
-                await asyncio.sleep((self.retry_backoff_ms * (2 ** attempt)) / 1000.0)
-
-        rec.status = "FAILED"
+        rec.http_status = http_status
+        rec.response_body = response_body
+        rec.error = err
         rec.updated_at = self._now_iso()
-        print(
-            f"[CALLBACK][FAILED] event_id={event_id} status={rec.http_status} "
-            f"error={rec.error} response={json.dumps(rec.response_body, ensure_ascii=False)}"
-        )
+
+        is_client_error = http_status is not None and 400 <= http_status < 500
+        if is_client_error:
+            rec.status = "REJECT"
+            print(
+                f"[CALLBACK][REJECT] event_id={event_id} status={http_status} "
+                f"error={err} response={json.dumps(response_body, ensure_ascii=False)}"
+            )
+        else:
+            rec.status = "FAILED"
+            from services.event_service import record_event
+
+            record_event(
+                "callback.failed",
+                severity="error",
+                summary="回调失败",
+                detail={"event_id": event_id, "error": rec.error, "http_status": rec.http_status},
+            )
+            print(
+                f"[CALLBACK][FAILED] event_id={event_id} status={rec.http_status} "
+                f"error={rec.error} response={json.dumps(rec.response_body, ensure_ascii=False)}"
+            )
+        self._persist_record_redis(event_id)
 
     def _post_json(self, payload: dict[str, Any]) -> tuple[bool, int | None, Any, str | None]:
         body = json.dumps(payload).encode("utf-8")
