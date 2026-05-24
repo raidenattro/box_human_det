@@ -48,6 +48,7 @@ from services.annotation_service import (
     save_camera_annotation,
 )
 from services.runtime_config_service import get_camera_settings_payload
+from services.matrix_service import build_matrix_overview
 
 
 def register_camera_routes(
@@ -69,6 +70,15 @@ def register_camera_routes(
             probe_online=probe,
         )
         return {"status": "success", "items": items}
+
+    @router.get("/matrix/overview")
+    async def matrix_overview():
+        return build_matrix_overview(
+            camera_ips_file,
+            json_dir,
+            default_json_file,
+            frames_dir=frames_dir,
+        )
 
     def _attach_list_items(result: dict, *, probe: bool = False) -> dict:
         if result.get("status") == "success":

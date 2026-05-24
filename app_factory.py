@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from core.auth_middleware import AuthMiddleware
 from core.auth_settings import load_auth_settings
 from core.config import load_app_config
-from core.spa_static import mount_spa
+from core.spa_static import mount_spa, register_spa_fallback
 from services.admin_routes import register_admin_routes
 from services.auth_routes import register_auth_routes
 from services.auth_service import ensure_users_file
@@ -65,7 +65,8 @@ def create_app():
         os.path.join(paths["base_localdata_dir"], "mediamtx.yml"),
     )
     frontend_dist = os.environ.get("FRONTEND_DIST", os.path.join("web", "dist"))
-    if os.path.isfile(os.path.join(frontend_dist, "index.html")):
+    spa_enabled = os.path.isfile(os.path.join(frontend_dist, "index.html"))
+    if spa_enabled:
         mount_spa(app, frontend_dist)
     else:
         dashboard_html = os.path.join(paths["templates_dir"], "dashboard.html")
@@ -174,5 +175,8 @@ def create_app():
         await inference_service.websocket_inference(websocket)
 
     app.include_router(api_router)
+
+    if spa_enabled:
+        register_spa_fallback(app, frontend_dist)
 
     return app, app_config

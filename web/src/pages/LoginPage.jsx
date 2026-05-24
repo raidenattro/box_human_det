@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import AppFooter from '../components/AppFooter';
 import { useAuth } from '../context/AuthContext';
 import { formatUserError } from '../lib/userFacingText';
+import logoUrl from '../assets/logo.svg?url';
 import './LoginPage.css';
 
 const OAUTH_ERRORS = {
@@ -54,8 +55,10 @@ export default function LoginPage() {
     <div className="login-page">
       <div className="login-page-main">
       <div className="login-card">
-        <h1>米道视觉检测系统</h1>
-        <p className="login-sub">请登录后继续使用</p>
+        <h1 className="login-brand">
+          <img src={logoUrl} alt="DiDPS" className="login-logo" width={172} height={40} />
+          <span className="login-tagline">Digital Picking System</span>
+        </h1>
 
         {error && <div className="login-error">{error}</div>}
 

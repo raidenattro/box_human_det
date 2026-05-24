@@ -9,6 +9,28 @@
   flex-wrap: wrap;
 }
 
+.app-nav-start {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.app-nav-brand {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  line-height: 0;
+  text-decoration: none;
+}
+
+.app-nav-logo {
+  display: block;
+  height: 32px;
+  width: auto;
+}
+
 .app-nav-links {
   display: flex;
   gap: 16px;
@@ -28,7 +50,7 @@
 }
 
 .app-nav-links a:hover:not(.active) {
-  text-decoration: underline;
+  color: #e8eef4;
 }
 
 .app-nav-user {

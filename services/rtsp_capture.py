@@ -162,6 +162,15 @@ class _FfmpegRtspCapture:
             time.sleep(0.02)
         return False, None
 
+    def get(self, prop: int) -> float:
+        if prop == cv2.CAP_PROP_FRAME_WIDTH:
+            return float(self._width)
+        if prop == cv2.CAP_PROP_FRAME_HEIGHT:
+            return float(self._height)
+        if prop == cv2.CAP_PROP_FPS:
+            return 25.0
+        return 0.0
+
     def release(self) -> None:
         self._stop.set()
         if self._proc is not None:
@@ -192,6 +201,12 @@ class _OpencvCaptureAdapter:
 
     def read(self) -> tuple[bool, np.ndarray | None]:
         return self._cap.read()
+
+    def get(self, prop: int) -> float:
+        return float(self._cap.get(prop))
+
+    def set(self, prop: int, value: float) -> bool:
+        return bool(self._cap.set(prop, value))
 
     def release(self) -> None:
         self._cap.release()

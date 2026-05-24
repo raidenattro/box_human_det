@@ -22,16 +22,28 @@
   padding: 28px 24px;
 }
 
-.login-card h1 {
-  margin: 0 0 6px;
-  font-size: 1.35rem;
-  font-weight: 600;
+.login-brand {
+  margin: 0 0 20px;
+  padding: 0;
+  border: none;
+  font: inherit;
+  font-weight: normal;
 }
 
-.login-sub {
-  margin: 0 0 20px;
-  color: #8fa3b5;
-  font-size: 0.9rem;
+.login-logo {
+  display: block;
+  width: 100%;
+  max-width: 172px;
+  height: auto;
+}
+
+.login-tagline {
+  margin: 6px 0 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #6d8496;
 }
 
 .login-form {

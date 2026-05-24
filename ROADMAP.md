@@ -36,13 +36,28 @@
 
 ## 新需求
 
-1. 需要一个页面，把所有区域/货架全部显示出来，以Camera为单位/成组。我需要看到所有的事件被识别到的全局界面。可以是一个大表格/矩阵？
+1. **事件矩阵页（已实现）** — 导航「事件矩阵」`/matrix`，API `GET /api/matrix/overview`，按摄像头分组展示货架网格与碰撞/告警状态（约 1.5s 轮询）。
+   - **已排查（2026-05-24）**：`event-worker` 本身在跑；根因是 **推理镜像过旧 + 投递方式不一致**：
+     - 旧推理镜像的 `pose_bus` 只 `PUBLISH pose:live:*`，不写 `pose:stream`；
+     - `event-worker` 配置 `POSE_DELIVERY=stream`，只消费 `pose:stream` → 无 `event:*`，监控页无碰撞/告警。
+   - **已修复**：
+     - 重建 `visual-dps-inference-lite`，启动推理容器时注入 `POSE_DELIVERY=stream` 等环境变量；
+     - 修复 `_OpencvCaptureAdapter` 缺少 `get()` 导致 `RTSP_CAPTURE_BACKEND=opencv` 时推理秒退；
+     - 验证：`pose:stream` 有写入，`event:snapshot:cam2` 正常更新（cam2 需有 RTSP 源与货框标注）。
+   - **备注**：cam5/7/8 等若无货框标注仍不会有区域事件；无 RTSP 推流的摄像头推理容器会退出，需 `./scripts/start-mp4-rtsp-multi.sh` 或实机推流。
 
-2. 需要澄清，开启检测后到底开启了什么？我docker ps没看到容器有增加；
+2. **已澄清：「开启检测」到底开了什么？**（总览/监控页「开启智能检测」→ `POST /api/cameras/{id}/inference/start`）
+   - **会新增**：每路一个推理容器 `visual-dps-infer-{camera_id}`（标签 `visual-dps.role=inference`），进程读 RTSP → 检测 + 17 点姿态 → Redis `pose:live:*`；不在 `docker compose` 常驻服务表里，需用 `docker ps --filter "label=visual-dps.role=inference"` 查看。
+   - **不会新增**：`visual-dps-event-worker`（compose 已常驻，读姿态 + 标注做碰撞/报警/Java 回调）、redis、mediamtx、ui。
+   - **与预览无关**：HLS/WebRTC 不依赖检测开关；骨架/碰撞 overlay 需该路推理在跑且 event-worker 正常。
+   - **若看不到容器**：启动失败看 UI 报错；先构建推理镜像；UI 需挂 `/var/run/docker.sock`；秒退查 `docker ps -a` 与 `localdata/inference/{id}.status.json`。
+   - **旧路径**：上传视频的 `POST /api/start_inference` 为进程内推理，不起 Docker 容器（与当前按路容器模式不同）。详见 [docs/DEPLOY.md](./docs/DEPLOY.md)、[docs/PIPELINE_SPLIT.md](./docs/PIPELINE_SPLIT.md)。
 
-3. 监控界面上的“开启检测”开关，旁边默认显示一横，表示全局没有配模型？但实际上全局配好了的，有些摄像头有问题，不全是。另外摄像头个性配置中选择了指定的算法，监控界面上也不会变，很奇怪！需要核实并解决。
+3. ~~监控界面上的“开启检测”开关，旁边默认显示一横，表示全局没有配模型？但实际上全局配好了的，有些摄像头有问题，不全是。另外摄像头个性配置中选择了指定的算法，监控界面上也不会变，很奇怪！需要核实并解决。~~ 似乎已经解决了，现在的问题就是更新话覆盖模型后，如果启动失败会自动fallback到全局默认。
 
 4. 模型框架单核 FPS多核 FPS备注
 RTMPose-tMMPose / ONNX~25–35~60–90最轻量，工业部署首选
 RTMPose-sMMPose / ONNX~15–25~40–60精度/速度均衡
 MoveNet LightningTFLite~25–40~50–80Google官方，移动端优化好
+
+5. 需要生成一个svg Logo，作为本系统的Logo；本系统名字DiDPS（意思是深度智能DPS，Digital Picking System（数字拣选系统））

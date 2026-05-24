@@ -6,7 +6,7 @@ from fastapi import APIRouter, FastAPI
 
 from core.auth_middleware import AuthMiddleware
 from core.auth_settings import load_auth_settings
-from core.spa_static import mount_spa
+from core.spa_static import mount_spa, register_spa_fallback
 from services.admin_routes import register_admin_routes
 from services.auth_routes import register_auth_routes
 from services.auth_service import ensure_users_file
@@ -123,3 +123,5 @@ async def runtime_state():
 
 
 app.include_router(api_router)
+
+register_spa_fallback(app, FRONTEND_DIST)

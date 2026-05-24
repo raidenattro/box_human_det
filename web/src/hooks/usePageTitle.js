@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 
-export const APP_NAME = '米道视觉检测系统';
+export const APP_NAME = 'DiDPS';
 
 const ROUTE_TITLES = {
   '/login': '登录',
   '/': '摄像头总览',
+  '/matrix': '事件矩阵',
   '/monitor': '检测监控',
   '/settings': '系统设置',
 };

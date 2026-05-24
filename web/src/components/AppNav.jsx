@@ -1,5 +1,6 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import logoUrl from '../assets/logo.svg?url';
 import './AppNav.css';
 
 export default function AppNav() {
@@ -13,10 +14,18 @@ export default function AppNav() {
 
   return (
     <nav className="app-nav">
-      <div className="app-nav-links">
+      <div className="app-nav-start">
+        <Link to="/" className="app-nav-brand" title="DiDPS">
+          <img src={logoUrl} alt="DiDPS" className="app-nav-logo" width={138} height={32} />
+        </Link>
+        <div className="app-nav-links">
         <NavLink to="/" end>
           摄像头总览
         </NavLink>
+        <NavLink to="/matrix">
+          事件矩阵
+        </NavLink>
+        </div>
       </div>
       {authRequired && user && (
         <div className="app-nav-user">
