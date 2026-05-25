@@ -7,7 +7,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /app
 
-# OpenCV runtime libs + ffmpeg for video stream decoding.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgl1 \
@@ -16,11 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --upgrade pip setuptools wheel
 
-# Install OpenMMLab runtime dependencies.
 RUN pip install openmim && \
     mim install "mmengine>=0.10.0" "mmcv>=2.0.0,<2.3.0" "mmdet>=3.0.0,<3.4.0"
 
-# Install Python packages used by box_human_det.
 RUN pip install \
     mmpose \
     fastapi \
@@ -28,9 +25,14 @@ RUN pip install \
     python-multipart \
     opencv-python-headless \
     numpy \
-    psutil
+    psutil \
+    "passlib[bcrypt]" \
+    "bcrypt<4.1" \
+    httpx \
+    itsdangerous \
+    redis
 
-COPY box_human_det /app
+COPY . /app
 
 EXPOSE 8045
 

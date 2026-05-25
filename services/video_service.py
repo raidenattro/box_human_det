@@ -1,8 +1,4 @@
-"""视频上传、转码和首帧提取相关函数。
-
-这个模块只负责和视频文件打交道，把上传文件落盘、转码、提取首帧
-这些 I/O 逻辑与推理流程分开。
-"""
+"""视频上传、转码和首帧提取相关函数。"""
 
 import base64
 import os
@@ -15,8 +11,37 @@ from fastapi import UploadFile
 from core.state import STATE
 
 
+def resize_frame_to_height(frame, target_height: int):
+    """按目标高度等比缩放帧（不放大）。"""
+    src_h, src_w = frame.shape[:2]
+    target_h = min(int(target_height), src_h)
+    target_w = int(round(src_w * (target_h / src_h)))
+    target_w = max(2, target_w - (target_w % 2))
+    target_h = max(2, target_h - (target_h % 2))
+
+    if target_w == src_w and target_h == src_h:
+        return frame
+
+    return cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+
+
+def read_non_black_frame(cap, max_reads: int = 30):
+    best_frame = None
+    best_score = -1.0
+    for _ in range(max_reads):
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            continue
+        score = float(frame.mean())
+        if score > best_score:
+            best_score = score
+            best_frame = frame
+        if score >= 10.0:
+            break
+    return best_frame
+
+
 def reserve_next_upload_id(counter_file: str, base_localdata_dir: str) -> int:
-    """预留一个持久化递增的上传编号。"""
     os.makedirs(base_localdata_dir, exist_ok=True)
     current = 0
     if os.path.exists(counter_file):
@@ -32,8 +57,7 @@ def reserve_next_upload_id(counter_file: str, base_localdata_dir: str) -> int:
     return next_id
 
 
-def transcode_video_to_480p(src_path: str, dst_path: str) -> Tuple[int, int]:
-    """将上传视频转码到最高 480p，并保持宽高比不变。"""
+def transcode_video_to_height(src_path: str, dst_path: str, target_height: int) -> Tuple[int, int]:
     cap = cv2.VideoCapture(src_path)
     if not cap.isOpened():
         raise RuntimeError("无法打开上传视频进行转码")
@@ -44,7 +68,7 @@ def transcode_video_to_480p(src_path: str, dst_path: str) -> Tuple[int, int]:
     if not fps or fps <= 0:
         fps = 25.0
 
-    target_h = min(480, src_h)
+    target_h = min(int(target_height), src_h)
     target_w = int(round(src_w * (target_h / src_h)))
     target_w = max(2, target_w - (target_w % 2))
     target_h = max(2, target_h - (target_h % 2))
@@ -53,7 +77,7 @@ def transcode_video_to_480p(src_path: str, dst_path: str) -> Tuple[int, int]:
     writer = cv2.VideoWriter(dst_path, fourcc, fps, (target_w, target_h))
     if not writer.isOpened():
         cap.release()
-        raise RuntimeError("无法创建 480p 转码输出文件")
+        raise RuntimeError("无法创建转码输出文件")
 
     try:
         while True:
@@ -69,8 +93,15 @@ def transcode_video_to_480p(src_path: str, dst_path: str) -> Tuple[int, int]:
     return target_w, target_h
 
 
-async def handle_video_upload(file: UploadFile, upload_dir: str, upload_480p_dir: str, json_dir: str, counter_file: str, base_localdata_dir: str):
-    """保存新上传的视频，并初始化会话路径到 STATE。"""
+async def handle_video_upload(
+    file: UploadFile,
+    upload_dir: str,
+    upload_480p_dir: str,
+    json_dir: str,
+    counter_file: str,
+    base_localdata_dir: str,
+    transcode_height: int,
+):
     os.makedirs(upload_dir, exist_ok=True)
     os.makedirs(upload_480p_dir, exist_ok=True)
     os.makedirs(json_dir, exist_ok=True)
@@ -86,12 +117,12 @@ async def handle_video_upload(file: UploadFile, upload_dir: str, upload_480p_dir
         shutil.copyfileobj(file.file, buffer)
 
     try:
-        out_w, out_h = transcode_video_to_480p(raw_video_path, compressed_video_path)
+        out_w, out_h = transcode_video_to_height(raw_video_path, compressed_video_path, transcode_height)
         STATE.video_path = compressed_video_path
         print(f"✅ 上传视频已转码: {compressed_video_path} ({out_w}x{out_h})")
     except Exception as e:
         STATE.video_path = raw_video_path
-        print(f"⚠️ 480p 转码失败，回退原视频: {e}")
+        print(f"⚠️ 转码失败，回退原视频: {e}")
 
     STATE.is_inferencing = False
     STATE.upload_id = upload_id
@@ -103,8 +134,7 @@ async def handle_video_upload(file: UploadFile, upload_dir: str, upload_480p_dir
     return {"status": "success", "upload_id": upload_id, "upload_tag": upload_tag}
 
 
-def get_first_frame_b64(video_path: str):
-    """读取视频第一帧，并返回 base64 编码的 JPEG 数据。"""
+def get_first_frame_b64(video_path: str, capture_height: int | None = None):
     if not video_path:
         return {"error": "No video"}
 
@@ -113,16 +143,22 @@ def get_first_frame_b64(video_path: str):
         return {"error": "No video"}
 
     cap = cv2.VideoCapture(video_path)
-    ret, frame = cap.read()
+    frame = read_non_black_frame(cap) if is_url else None
+    if frame is None:
+        ret, frame = cap.read()
+        if not ret:
+            cap.release()
+            return {"error": "Read failed"}
     cap.release()
-    if ret:
-        _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        return {"image": base64.b64encode(buffer).decode('utf-8')}
-    return {"error": "Read failed"}
+
+    if capture_height:
+        frame = resize_frame_to_height(frame, capture_height)
+
+    _, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    return {"status": "success", "image": base64.b64encode(buffer).decode("utf-8")}
 
 
 def initialize_source_from_config(app_config: dict, json_dir: str, default_json_file: str):
-    """从配置文件初始化默认视频来源，避免运行时再通过接口切换流地址。"""
     source_cfg = app_config.get("source", {})
     if not isinstance(source_cfg, dict):
         source_cfg = {}
@@ -153,7 +189,4 @@ def initialize_source_from_config(app_config: dict, json_dir: str, default_json_
     STATE.source_type = "stream"
     STATE.source_url = stream_url
 
-    print(
-        f"✅ 已从配置文件初始化网络流: {stream_url} "
-        f"json_path={upload_json_path}"
-    )
+    print(f"✅ 已从配置文件初始化网络流: {stream_url} json_path={upload_json_path}")
