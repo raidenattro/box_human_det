@@ -146,7 +146,7 @@ def validate_camera_payload(data: dict, existing_id: str | None = None) -> tuple
     if not path:
         return None, "通道编号不能为空"
     if not _PATH_RE.match(path):
-        return None, "通道编号仅支持字母、数字、下划线、中划线（1–64 个字符）"
+        return None, "通道编号仅支持字母、数字、下划线、中划线（1–64 个字符）；若以数字开头（如 71），写入 mediamtx.yml 时会自动加双引号"
     if not name:
         return None, "名称不能为空"
 

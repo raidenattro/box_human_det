@@ -1,11 +1,11 @@
 {
   "models": {
-    "backend": "mediapipe"
+    "backend": "rtmpose_onnx"
   },
   "inference": {
     "frame_rate": 15,
-    "height": 480,
-    "pose_frame_interval": 3
+    "height": 240,
+    "pose_frame_interval": 5
   },
   "debug-info": {
     "enabled": false

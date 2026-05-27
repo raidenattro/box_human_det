@@ -22,6 +22,9 @@ INFERENCE_LITE_IMAGE = os.environ.get("INFERENCE_LITE_IMAGE", "visual-dps-infere
 INFERENCE_LITE_GPU_IMAGE = os.environ.get(
     "INFERENCE_LITE_GPU_IMAGE", "visual-dps-inference-lite-gpu:latest"
 )
+INFERENCE_LITE_GPU_ONNX_IMAGE = os.environ.get(
+    "INFERENCE_LITE_GPU_ONNX_IMAGE", "visual-dps-inference-lite-gpu-onnx:latest"
+)
 HOST_PROJECT_ROOT = os.environ.get("HOST_PROJECT_ROOT", "").strip()
 INFERENCE_JSON_PATH = os.environ.get(
     "INFERENCE_JSON_PATH",
@@ -222,6 +225,13 @@ def _image_exists(client, image: str) -> bool:
 
 def _resolve_inference_image(client, backend: str) -> tuple[str, str]:
     """返回 (镜像名, 实际后端)。优先配置项，缺失时回退到 lite 镜像。"""
+    use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
+    if backend in _LITE_BACKENDS and use_gpu:
+        if _image_exists(client, INFERENCE_LITE_GPU_ONNX_IMAGE):
+            return INFERENCE_LITE_GPU_ONNX_IMAGE, backend
+        if _image_exists(client, INFERENCE_LITE_GPU_IMAGE):
+            return INFERENCE_LITE_GPU_IMAGE, backend
+
     explicit = os.environ.get("INFERENCE_IMAGE", "").strip()
     if explicit:
         if _image_exists(client, explicit):
@@ -235,9 +245,6 @@ def _resolve_inference_image(client, backend: str) -> tuple[str, str]:
         return explicit, backend
 
     if backend in _LITE_BACKENDS:
-        use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
-        if use_gpu and _image_exists(client, INFERENCE_LITE_GPU_IMAGE):
-            return INFERENCE_LITE_GPU_IMAGE, backend
         if _image_exists(client, INFERENCE_LITE_IMAGE):
             return INFERENCE_LITE_IMAGE, backend
         if use_gpu:
@@ -296,6 +303,11 @@ def start_inference_container(camera: dict, request=None) -> dict:
     effective = get_effective_settings(app_config, camera)
     backend = resolve_backend_name(app_config, overrides=effective)
     infer_image, backend = _resolve_inference_image(client, backend)
+    use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
+    rtsp_backend = os.environ.get("INFERENCE_RTSP_CAPTURE_BACKEND", "").strip()
+    if not rtsp_backend:
+        # 有 GPU 时用 auto（ffmpeg CUDA）；无 GPU 用 opencv，避免容器内 qsv 假阳性
+        rtsp_backend = "auto" if use_gpu else "opencv"
     env = {
         "INFERENCE_CAMERA_ID": camera_id,
         "INFERENCE_STREAM_URL": _stream_url_for_container(stream_url),
@@ -306,7 +318,7 @@ def start_inference_container(camera: dict, request=None) -> dict:
         "INFERENCE_HEIGHT": str(effective.get("inference.height", 480)),
         "INFERENCE_POSE_FRAME_INTERVAL": str(effective.get("inference.pose_frame_interval", 3)),
         "INFERENCE_DEBUG_VISUAL": "1" if effective.get("debug-info.enabled") else "0",
-        "RTSP_CAPTURE_BACKEND": os.environ.get("RTSP_CAPTURE_BACKEND", "auto"),
+        "RTSP_CAPTURE_BACKEND": rtsp_backend,
         # 与 event-worker 的 POSE_DELIVERY=stream 对齐（推理 XADD pose:stream）
         "POSE_DELIVERY": os.environ.get("POSE_DELIVERY", "stream").strip() or "stream",
         "POSE_STREAM_KEY": os.environ.get("POSE_STREAM_KEY", "pose:stream"),
@@ -326,7 +338,6 @@ def start_inference_container(camera: dict, request=None) -> dict:
     import docker
 
     device_requests = []
-    use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
     if use_gpu:
         device_requests.append(docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]]))
 

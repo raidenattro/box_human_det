@@ -2,10 +2,27 @@
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import List
 from urllib.parse import urlparse
+
+# 可作 YAML 未加引号映射键：字母开头，仅含字母数字 _ -
+_YAML_PLAIN_PATH_KEY_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+_YAML_RESERVED_PATH_KEYS = frozenset(
+    {"true", "false", "yes", "no", "on", "off", "null", "~"}
+)
+
+
+def mediamtx_yaml_path_key(path: str) -> str:
+    """MediaMTX paths 下的 YAML 键名。纯数字或以数字开头须加引号，否则会被解析为数字类型。"""
+    s = str(path or "").strip()
+    if not s:
+        return '""'
+    if not _YAML_PLAIN_PATH_KEY_RE.match(s) or s.lower() in _YAML_RESERVED_PATH_KEYS:
+        return json.dumps(s, ensure_ascii=False)
+    return s
 
 MEDIAMTX_RTSP_HOST = os.environ.get("MEDIAMTX_RTSP_HOST", "127.0.0.1")
 MEDIAMTX_INTERNAL_HOST = os.environ.get("MEDIAMTX_INTERNAL_HOST", "mediamtx")
@@ -174,7 +191,7 @@ def generate_mediamtx_yaml(cameras: List[dict]) -> str:
         if not path:
             continue
         source_type = cam.get("source_type")
-        lines.append(f"  {path}:")
+        lines.append(f"  {mediamtx_yaml_path_key(path)}:")
 
         if source_type == SOURCE_EXTERNAL:
             lines.append("    source: publisher")

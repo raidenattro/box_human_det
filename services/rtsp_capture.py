@@ -1,4 +1,4 @@
-"""RTSP 低延迟采帧：OpenCV 或 FFmpeg（硬件解码自适应）。"""
+"""RTSP 低延迟采帧：后台线程全速读流，仅保留最新帧；推理侧取快照副本。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from services.hwaccel_probe import probe_ffmpeg_decode_profile, probe_summary
+from services.latest_frame_buffer import LatestFrameBuffer
 
 _DEFAULT_FFMPEG_OPTS = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0"
 _LOW_LATENCY_FFMPEG_OPTS = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS", _DEFAULT_FFMPEG_OPTS)
@@ -35,7 +36,7 @@ def _backend_mode() -> str:
 
 
 class _FfmpegRtspCapture:
-    """子进程 FFmpeg 解码，后台线程只保留最新一帧。"""
+    """子进程 FFmpeg 解码 + 后台读帧线程 → LatestFrameBuffer。"""
 
     def __init__(self, url: str):
         self.url = url
@@ -43,14 +44,17 @@ class _FfmpegRtspCapture:
         self._width = 0
         self._height = 0
         self._proc: subprocess.Popen | None = None
-        self._lock = threading.Lock()
-        self._latest: np.ndarray | None = None
+        self._buffer = LatestFrameBuffer()
         self._opened = False
         self._reader: threading.Thread | None = None
         self._stop = threading.Event()
 
     def isOpened(self) -> bool:
         return self._opened
+
+    def snapshot_latest(self) -> Tuple[bool, np.ndarray | None, float]:
+        ok, frame, captured_at, _seq = self._buffer.snapshot()
+        return ok, frame, captured_at
 
     def _probe_size(self) -> tuple[int, int]:
         ffprobe = os.environ.get("FFPROBE_BIN", "ffprobe").strip() or "ffprobe"
@@ -140,23 +144,20 @@ class _FfmpegRtspCapture:
             if not buf or len(buf) < frame_bytes:
                 break
             frame = np.frombuffer(buf, dtype=np.uint8).reshape((self._height, self._width, 3))
-            with self._lock:
-                self._latest = frame.copy()
+            self._buffer.update(frame.copy())
 
     def grab(self) -> bool:
-        with self._lock:
-            return self._latest is not None
+        ok, _, _, _ = self._buffer.snapshot()
+        return ok
 
     def retrieve(self) -> tuple[bool, np.ndarray | None]:
-        with self._lock:
-            if self._latest is None:
-                return False, None
-            return True, self._latest.copy()
+        ok, frame, _, _ = self._buffer.snapshot()
+        return ok, frame
 
     def read(self) -> tuple[bool, np.ndarray | None]:
         deadline = time.time() + float(os.environ.get("RTSP_OPEN_TIMEOUT_SEC", "8"))
         while time.time() < deadline:
-            ok, frame = self.retrieve()
+            ok, frame, _ = self.snapshot_latest()
             if ok and frame is not None:
                 return True, frame
             time.sleep(0.02)
@@ -186,7 +187,96 @@ class _FfmpegRtspCapture:
         self._opened = False
 
 
+class _OpencvRtspCapture:
+    """OpenCV 采帧 + 后台 grab/retrieve 线程 → LatestFrameBuffer。"""
+
+    def __init__(self, url: str, buffer_size: int = 1):
+        self.url = url
+        self._buffer = LatestFrameBuffer()
+        self._cap: cv2.VideoCapture | None = None
+        self._opened = False
+        self._reader: threading.Thread | None = None
+        self._stop = threading.Event()
+        apply_low_latency_ffmpeg_env()
+        self._cv_cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        try:
+            self._cv_cap.set(cv2.CAP_PROP_BUFFERSIZE, max(1, int(buffer_size)))
+        except Exception:
+            pass
+
+    def isOpened(self) -> bool:
+        return self._opened
+
+    def snapshot_latest(self) -> Tuple[bool, np.ndarray | None, float]:
+        ok, frame, captured_at, _seq = self._buffer.snapshot()
+        return ok, frame, captured_at
+
+    def open(self) -> bool:
+        if not self._cv_cap.isOpened():
+            return False
+        self._opened = True
+        self._reader = threading.Thread(target=self._read_loop, name="opencv-rtsp-reader", daemon=True)
+        self._reader.start()
+        return True
+
+    def _read_loop(self) -> None:
+        cap = self._cv_cap
+        idle_sleep = 0.01
+        fail_streak = 0
+        while not self._stop.is_set():
+            if cap is None or not cap.isOpened():
+                break
+            ok, frame = cap.read()
+            if ok and frame is not None and frame.size > 0:
+                self._buffer.update(frame.copy())
+                fail_streak = 0
+            else:
+                fail_streak += 1
+                if fail_streak > 30:
+                    time.sleep(0.05)
+                else:
+                    time.sleep(idle_sleep)
+
+    def grab(self) -> bool:
+        ok, _, _, _ = self._buffer.snapshot()
+        return ok
+
+    def retrieve(self) -> tuple[bool, np.ndarray | None]:
+        ok, frame, _, _ = self._buffer.snapshot()
+        return ok, frame
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        deadline = time.time() + float(os.environ.get("RTSP_OPEN_TIMEOUT_SEC", "8"))
+        while time.time() < deadline:
+            ok, frame, _ = self.snapshot_latest()
+            if ok and frame is not None:
+                return True, frame
+            time.sleep(0.02)
+        return False, None
+
+    def get(self, prop: int) -> float:
+        if self._cv_cap is None:
+            return 0.0
+        return float(self._cv_cap.get(prop))
+
+    def set(self, prop: int, value: float) -> bool:
+        if self._cv_cap is None:
+            return False
+        return bool(self._cv_cap.set(prop, value))
+
+    def release(self) -> None:
+        self._stop.set()
+        if self._reader is not None and self._reader.is_alive():
+            self._reader.join(timeout=1.0)
+        if self._cv_cap is not None:
+            self._cv_cap.release()
+            self._cv_cap = None
+        self._opened = False
+
+
 class _OpencvCaptureAdapter:
+    """旧式同步适配（仅 read_rtsp_frame_once 等低频路径保留）。"""
+
     def __init__(self, cap: cv2.VideoCapture):
         self._cap = cap
 
@@ -217,22 +307,30 @@ def open_rtsp_capture(url: str, buffer_size: int = 1):
     if mode == "ffmpeg":
         cap = _FfmpegRtspCapture(url)
         if cap.open():
-            print(f"ℹ️ RTSP 采帧: ffmpeg ({probe_summary()})")
+            print(f"ℹ️ RTSP 采帧: ffmpeg 后台最新帧 ({probe_summary()})")
             return cap
         cap.release()
         print("⚠️ FFmpeg RTSP 打开失败，回退 OpenCV")
 
+    cap = _OpencvRtspCapture(url, buffer_size=buffer_size)
+    if cap.open():
+        print(f"ℹ️ RTSP 采帧: opencv 后台最新帧 ({probe_summary()})")
+        return cap
+    cap.release()
+    print("⚠️ OpenCV 后台读帧启动失败，回退同步 OpenCV")
     apply_low_latency_ffmpeg_env()
     cv_cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
     try:
         cv_cap.set(cv2.CAP_PROP_BUFFERSIZE, max(1, int(buffer_size)))
     except Exception:
         pass
-    print(f"ℹ️ RTSP 采帧: opencv-ffmpeg ({probe_summary()})")
     return _OpencvCaptureAdapter(cv_cap)
 
 
 def drain_capture_buffer(cap, max_grabs: int | None = None) -> int:
+    """兼容旧调用；后台最新帧模式下为空操作。"""
+    if hasattr(cap, "snapshot_latest"):
+        return 0
     limit = _DRAIN_MAX if max_grabs is None else max(1, int(max_grabs))
     grabbed = 0
     for _ in range(limit):
@@ -243,6 +341,9 @@ def drain_capture_buffer(cap, max_grabs: int | None = None) -> int:
 
 
 def read_latest_frame(cap, max_drain: int | None = None) -> Tuple[bool, np.ndarray | None, float]:
+    if hasattr(cap, "snapshot_latest"):
+        ok, frame, captured_at = cap.snapshot_latest()
+        return ok, frame, captured_at
     limit = _DRAIN_MAX if max_drain is None else max(1, int(max_drain))
     grabbed = False
     for _ in range(limit):
@@ -257,22 +358,23 @@ def read_latest_frame(cap, max_drain: int | None = None) -> Tuple[bool, np.ndarr
 
 
 def read_rtsp_frame_once(url: str, timeout_sec: float | None = None) -> np.ndarray | None:
-    """低频抓一帧（UI 缩略图等）。Docker 内 FFmpeg 硬解常能连上 RTSP 但读不到帧，此处固定 OpenCV。"""
+    """低频抓一帧（UI 缩略图/监控页）。勿启后台读帧线程，避免占满 UI 事件循环。"""
     if timeout_sec is not None:
         os.environ["RTSP_OPEN_TIMEOUT_SEC"] = str(timeout_sec)
-    prev_backend = os.environ.get("RTSP_CAPTURE_BACKEND")
-    os.environ["RTSP_CAPTURE_BACKEND"] = "opencv"
+    apply_low_latency_ffmpeg_env()
+    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
     try:
-        cap = open_rtsp_capture(url, buffer_size=1)
         try:
-            if not cap.isOpened():
-                return None
-            ok, frame, _ = read_latest_frame(cap, max_drain=4)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+        if not cap.isOpened():
+            return None
+        adapter = _OpencvCaptureAdapter(cap)
+        try:
+            ok, frame, _ = read_latest_frame(adapter, max_drain=8)
             return frame if ok and frame is not None else None
         finally:
-            cap.release()
+            adapter.release()
     finally:
-        if prev_backend is None:
-            os.environ.pop("RTSP_CAPTURE_BACKEND", None)
-        else:
-            os.environ["RTSP_CAPTURE_BACKEND"] = prev_backend
+        cap.release()

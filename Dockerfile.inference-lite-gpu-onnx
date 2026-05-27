@@ -1,0 +1,66 @@
+# 在已有 lite-gpu 镜像上增量安装 RTMPose ONNX（conda 内装 onnxruntime-gpu）
+# 构建: ./scripts/build-inference-lite-gpu-onnx-image.sh
+
+ARG BASE_IMAGE=visual-dps-inference-lite-gpu:latest
+FROM ${BASE_IMAGE}
+
+ARG APT_MIRROR=mirrors.aliyun.com
+ARG PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG GITHUB_PROXY_BASE=
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG RTMPOSE_ONNX_DET_ZIP=https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmdet_nano_8xb32-100e_coco-obj365-person-05d8511e.zip
+ARG RTMPOSE_ONNX_POSE_ZIP=https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504.zip
+
+ENV http_proxy=${HTTP_PROXY} \
+    https_proxy=${HTTPS_PROXY} \
+  HTTP_PROXY=${HTTP_PROXY} \
+  HTTPS_PROXY=${HTTPS_PROXY}
+
+WORKDIR /app
+
+COPY docker/conda-mirror.sh /tmp/conda-mirror.sh
+RUN sh /tmp/conda-mirror.sh && rm /tmp/conda-mirror.sh
+
+# 只保留 onnxruntime-gpu（勿与 onnxruntime CPU 包共存）；构建时无 GPU，CUDA EP 在运行时再注册
+RUN /opt/conda/bin/pip uninstall -y onnxruntime onnxruntime-gpu 2>/dev/null || true \
+    && /opt/conda/bin/pip install --no-cache-dir -i "${PIP_INDEX}" "onnxruntime-gpu[cuda,cudnn]>=1.17" \
+    && /opt/conda/bin/pip install --no-cache-dir -i "${PIP_INDEX}" --no-deps rtmlib \
+    && /opt/conda/bin/pip install --no-cache-dir -i "${PIP_INDEX}" opencv-python-headless numpy \
+    && /opt/conda/bin/pip uninstall -y onnxruntime 2>/dev/null || true \
+    && /opt/conda/bin/python3 -c "import onnxruntime as ort; print('onnxruntime', ort.__version__, ort.get_available_providers())"
+
+RUN /opt/conda/bin/python3 - <<'PY'
+import io
+import urllib.request
+import zipfile
+from pathlib import Path
+
+DET = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmdet_nano_8xb32-100e_coco-obj365-person-05d8511e.zip"
+POSE = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504.zip"
+
+
+def fetch_onnx(url: str, out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"download {url}")
+    with urllib.request.urlopen(url, timeout=300) as resp:
+        data = resp.read()
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        for name in zf.namelist():
+            if name.endswith("end2end.onnx"):
+                target = out_dir / "end2end.onnx"
+                target.write_bytes(zf.read(name))
+                print(f"  -> {target}")
+                return
+    raise RuntimeError(f"no end2end.onnx in {url}")
+
+
+fetch_onnx(DET, Path("/app/localdata/models/rtmpose_onnx/rtmdet_nano"))
+fetch_onnx(POSE, Path("/app/localdata/models/rtmpose_onnx/rtmpose_t"))
+PY
+
+COPY services ./services
+COPY core ./core
+COPY inference_worker.py ./inference_worker.py
+
+ENV PATH="/opt/conda/bin:${PATH}"

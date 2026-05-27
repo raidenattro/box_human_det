@@ -5,6 +5,11 @@
 x-china-build-args: &china-build-args
   APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
   PIP_INDEX: ${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+  # 国内构建 GitHub / Google Storage 等大文件：如 https://ghfast.top 或 https://mirror.ghproxy.com
+  GITHUB_PROXY_BASE: ${GITHUB_PROXY_BASE:-}
+  # docker build 内 apt/pip/wget/conda 走代理（153 用 BUILD_HTTP_PROXY，见 deploy/153.env.example）
+  HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+  HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-${BUILD_HTTP_PROXY:-}}
 
 services:
   redis:
@@ -68,7 +73,8 @@ services:
       - MEDIAMTX_WEBRTC_BASE=http://mediamtx:8889
       - RTSP_CAPTURE_BACKEND=opencv
       - HOST_PROJECT_ROOT=${PWD}
-      - INFERENCE_IMAGE=${INFERENCE_IMAGE:-visual-dps-inference-lite:latest}
+      # 留空则由 inference_container_service 按 INFERENCE_USE_GPU / 后端自动选 lite 或 lite-gpu-onnx
+      - INFERENCE_IMAGE=${INFERENCE_IMAGE:-}
       - INFERENCE_LITE_IMAGE=${INFERENCE_LITE_IMAGE:-visual-dps-inference-lite:latest}
       - INFERENCE_LITE_GPU_IMAGE=${INFERENCE_LITE_GPU_IMAGE:-visual-dps-inference-lite-gpu:latest}
       - INFERENCE_USE_GPU=${INFERENCE_USE_GPU:-0}
@@ -134,6 +140,16 @@ services:
       dockerfile: Dockerfile.inference-lite-gpu
       args: *china-build-args
     image: visual-dps-inference-lite-gpu:latest
+    command: ["python", "inference_worker.py"]
+
+  # 在已有 lite-gpu 上增量 ONNX（国内构建更快，不重复拉 ffmpeg）
+  visual-dps-inference-lite-gpu-onnx:
+    profiles: ["build-only"]
+    build:
+      context: .
+      dockerfile: Dockerfile.inference-lite-gpu-onnx
+      args: *china-build-args
+    image: visual-dps-inference-lite-gpu-onnx:latest
     command: ["python", "inference_worker.py"]
 
 networks:

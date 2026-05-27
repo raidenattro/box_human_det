@@ -23,14 +23,11 @@ except Exception:
 
 from services.event_bus import get_event_snapshot
 from services.inference_backends import create_inference_backend, resolve_backend_name
-from services.rtsp_capture import drain_capture_buffer, open_rtsp_capture, read_latest_frame
+from services.rtsp_capture import open_rtsp_capture, read_latest_frame
 
 
-def _drain_stream_buffer(cap: cv2.VideoCapture) -> None:
-    drain_capture_buffer(cap)
-
-
-def _read_stream_frame(cap: cv2.VideoCapture):
+def _snapshot_stream_frame(cap):
+    """取 RTSP 最新帧快照（副本）；后台线程持续刷新缓冲。"""
     return read_latest_frame(cap)
 
 
@@ -224,7 +221,7 @@ class InferenceService:
         if is_stream:
             stream_buffer_size = int(self.app_config["inference"].get("stream_buffer_size", 1))
             cap = open_rtsp_capture(self.state.video_path, buffer_size=stream_buffer_size)
-            print("ℹ️ RTSP 低延迟采帧已启用（丢旧帧 + buffer=1）")
+            print("ℹ️ RTSP 采帧：后台线程刷新最新帧，推理仅消费快照副本")
         else:
             cap = cv2.VideoCapture(self.state.video_path)
 
@@ -275,6 +272,7 @@ class InferenceService:
 
         start_time = time.time()
         frame_count = 0
+        inference_tick = 0
         last_frame_started_at = time.monotonic()
 
         cached_bboxes = np.empty((0, 4), dtype=np.float32)
@@ -287,12 +285,10 @@ class InferenceService:
         try:
             while cap.isOpened() and self.state.is_inferencing:
                 loop_started_at = time.monotonic()
+                run_pose = (inference_tick % pose_frame_interval == 0)
 
-                if headless_stream and (frame_count % pose_frame_interval) != 0:
-                    await asyncio.get_running_loop().run_in_executor(
-                        self._executor, _drain_stream_buffer, cap
-                    )
-                    frame_count += 1
+                if headless_stream and not run_pose:
+                    inference_tick += 1
                     elapsed_skip = time.monotonic() - loop_started_at
                     sleep_skip = frame_period_sec - elapsed_skip
                     if sleep_skip > 0:
@@ -301,14 +297,22 @@ class InferenceService:
 
                 if is_stream:
                     ret, frame, _captured_at = await asyncio.get_running_loop().run_in_executor(
-                        self._executor, _read_stream_frame, cap
+                        self._executor, _snapshot_stream_frame, cap
                     )
                 else:
                     ret, frame = await asyncio.get_running_loop().run_in_executor(
                         self._executor, cap.read
                     )
 
+                inference_tick += 1
+
                 if not ret or frame is None:
+                    if is_stream:
+                        elapsed_wait = time.monotonic() - loop_started_at
+                        sleep_wait = frame_period_sec - elapsed_wait
+                        if sleep_wait > 0:
+                            await asyncio.sleep(sleep_wait)
+                        continue
                     print("✅ 视频推理完成，停止当前会话")
                     self.state.is_inferencing = False
                     break
@@ -319,7 +323,6 @@ class InferenceService:
                 else:
                     raw_frame = frame
 
-                run_pose = ((frame_count - 1) % pose_frame_interval == 0)
                 if run_pose or not headless_stream:
                     cached_bboxes = await self._run_detection(raw_frame)
 

@@ -366,13 +366,16 @@ def register_camera_routes(
 
     @router.post("/cameras/{camera_id}/capture")
     async def camera_capture_frame(camera_id: str):
+        import asyncio
+
         found = get_camera(camera_ips_file, camera_id)
         if found.get("error"):
             return JSONResponse(status_code=404, content=found)
         url = str(found["camera"].get("url") or "").strip()
         if not url:
             return JSONResponse(status_code=400, content={"error": "请填写视频流地址"})
-        return capture_camera_frame(
+        return await asyncio.to_thread(
+            capture_camera_frame,
             url=url,
             capture_height=capture_height,
             frames_dir=frames_dir,
@@ -382,10 +385,13 @@ def register_camera_routes(
 
     @router.post("/get_camera_frame")
     async def get_camera_frame(data: dict, request: Request):
+        import asyncio
+
         url = str(data.get("url", "")).strip()
         if not url:
             return {"error": "url is required"}
-        return capture_camera_frame(
+        return await asyncio.to_thread(
+            capture_camera_frame,
             url=url,
             capture_height=capture_height,
             frames_dir=frames_dir,

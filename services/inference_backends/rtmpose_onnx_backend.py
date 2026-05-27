@@ -25,6 +25,18 @@ def _models_dir(app_config: dict) -> str:
     return os.path.join(base, "models", "rtmpose_onnx")
 
 
+def _preload_ort_cuda_dlls(device: str) -> None:
+    if str(device or "").strip().lower() not in ("cuda", "gpu"):
+        return
+    try:
+        import onnxruntime as ort
+
+        if hasattr(ort, "preload_dlls"):
+            ort.preload_dlls()
+    except Exception as exc:
+        print(f"⚠️ onnxruntime preload_dlls 失败: {exc}")
+
+
 def _resolve_model_path(app_config: dict, key: str, default_name: str) -> str:
     models_cfg = app_config.get("models", {}) if isinstance(app_config.get("models"), dict) else {}
     raw = str(models_cfg.get(key) or "").strip()
@@ -66,6 +78,7 @@ class RTMPoseOnnxBackend:
 
         backend = str(models_cfg.get("rtmpose_onnx_ort_backend") or "onnxruntime").strip()
         device = str(models_cfg.get("rtmpose_onnx_device") or "cpu").strip()
+        _preload_ort_cuda_dlls(device)
 
         self._det = RTMDet(
             onnx_model=det_path,
