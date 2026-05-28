@@ -6,4 +6,4 @@ cd "$(dirname "$0")/.."
 source scripts/lib/docker-build.sh
 
 visual_dps_compose_build visual-dps-inference-lite visual-dps-inference-lite inference-lite
-echo "示例: INFERENCE_BACKEND=mediapipe docker compose up -d visual-dps-ui"
+echo "示例: INFERENCE_BACKEND=rtmpose_onnx docker compose up -d visual-dps-ui"

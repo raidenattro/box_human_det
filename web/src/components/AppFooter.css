@@ -37,7 +37,12 @@
 
 .app-footer-version {
   font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.72rem;
   color: #8fa3b5;
+  max-width: min(100%, 960px);
+  text-align: center;
+  line-height: 1.35;
+  word-break: break-word;
 }
 
 .app-footer-copy .tm-mark {

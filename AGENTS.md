@@ -13,7 +13,8 @@
 ## 推理后端
 
 - 已移除 OpenMMLab **mmpose** 运行时依赖。
-- 当前：`mediapipe` | `rtmpose_onnx`；计划新增 `yolo_pose`（见 `docs/FUTURE-yolo-pose.md`，默认 **YOLO26s-pose**）。
+- 当前仅 `rtmpose_onnx`；计划新增 `yolo_pose`（见 `docs/FUTURE-yolo-pose.md`，默认 **YOLO26s-pose**）。
+- 页脚版本：`GET /api/version` → `UI · API · Event · Infer`；产品号来自根目录 `version.json`。
 
 ## 摄像头流配置
 

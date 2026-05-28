@@ -1,22 +1,23 @@
-"""可插拔推理后端：mediapipe | rtmpose_onnx（后续 yolo_pose）。"""
+"""可插拔推理后端：rtmpose_onnx（后续 yolo_pose）。"""
 
 from __future__ import annotations
 
 import os
 
-BACKEND_MEDIAPIPE = "mediapipe"
 BACKEND_RTMPOSE_ONNX = "rtmpose_onnx"
-_LITE_BACKENDS = frozenset({BACKEND_MEDIAPIPE, BACKEND_RTMPOSE_ONNX})
+_LITE_BACKENDS = frozenset({BACKEND_RTMPOSE_ONNX})
 _ALIASES = {
-    "lite": BACKEND_MEDIAPIPE,
-    "mp": BACKEND_MEDIAPIPE,
-    "mediapipe": BACKEND_MEDIAPIPE,
+    "lite": BACKEND_RTMPOSE_ONNX,
+    "mp": BACKEND_RTMPOSE_ONNX,
+    "mediapipe": BACKEND_RTMPOSE_ONNX,
+    "mmpose": BACKEND_RTMPOSE_ONNX,
+    "mm": BACKEND_RTMPOSE_ONNX,
+    "default": BACKEND_RTMPOSE_ONNX,
     "rtmpose_onnx": BACKEND_RTMPOSE_ONNX,
     "rtmpose-t": BACKEND_RTMPOSE_ONNX,
     "rtmpose_t": BACKEND_RTMPOSE_ONNX,
     "rtmpose-cpu": BACKEND_RTMPOSE_ONNX,
     "rtmpose_cpu": BACKEND_RTMPOSE_ONNX,
-    "default": BACKEND_RTMPOSE_ONNX,
 }
 
 
@@ -31,7 +32,7 @@ def resolve_backend_name(
         if not key:
             return None
         name = _ALIASES.get(key, key)
-        if name in (BACKEND_MEDIAPIPE, BACKEND_RTMPOSE_ONNX):
+        if name == BACKEND_RTMPOSE_ONNX:
             return name
         return None
 
@@ -56,12 +57,8 @@ def resolve_backend_name(
 
 def create_inference_backend(app_config: dict, executor):
     name = resolve_backend_name(app_config)
-    if name == BACKEND_MEDIAPIPE:
-        from services.inference_backends.mediapipe_backend import MediaPipeBackend
-
-        return MediaPipeBackend(app_config, executor)
     if name == BACKEND_RTMPOSE_ONNX:
         from services.inference_backends.rtmpose_onnx_backend import RTMPoseOnnxBackend
 
         return RTMPoseOnnxBackend(app_config, executor)
-    raise RuntimeError(f"未知推理后端: {name}，可选 mediapipe | rtmpose_onnx")
+    raise RuntimeError(f"未知推理后端: {name}，当前仅支持 rtmpose_onnx")

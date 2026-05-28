@@ -18,7 +18,7 @@ ENV http_proxy=${HTTP_PROXY} \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    INFERENCE_BACKEND=mediapipe \
+    INFERENCE_BACKEND=rtmpose_onnx \
     INFERENCE_USE_GPU=1 \
     RTSP_CAPTURE_BACKEND=auto \
     DEBIAN_FRONTEND=noninteractive
@@ -62,7 +62,6 @@ RUN set -eu; \
 COPY docker/pip-install.sh /tmp/pip-install.sh
 RUN sh /tmp/pip-install.sh "${PIP_INDEX}" --upgrade pip \
     && sh /tmp/pip-install.sh "${PIP_INDEX}" \
-        mediapipe \
         onnxruntime-gpu \
         rtmlib \
         opencv-python-headless \
@@ -76,20 +75,11 @@ RUN sh /tmp/pip-install.sh "${PIP_INDEX}" --upgrade pip \
         "passlib[bcrypt]" \
         "bcrypt<4.1"
 
-ARG MEDIAPIPE_MODEL_URL=https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
 ARG RTMPOSE_ONNX_DET_ZIP=https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmdet_nano_8xb32-100e_coco-obj365-person-05d8511e.zip
 ARG RTMPOSE_ONNX_POSE_ZIP=https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504.zip
 RUN set -eu; \
-    if [ -n "${GITHUB_PROXY_BASE}" ]; then \
-      MP_URL="${GITHUB_PROXY_BASE%/}/${MEDIAPIPE_MODEL_URL}"; \
-    else \
-      MP_URL="${MEDIAPIPE_MODEL_URL}"; \
-    fi; \
-    echo "mediapipe url=${MP_URL}"; \
-    mkdir -p /app/localdata/models/pose_landmarker \
-      /app/localdata/models/rtmpose_onnx/rtmdet_nano \
+    mkdir -p /app/localdata/models/rtmpose_onnx/rtmdet_nano \
       /app/localdata/models/rtmpose_onnx/rtmpose_t; \
-    wget -q --timeout=120 --tries=3 -O /app/localdata/models/pose_landmarker_lite.task "${MP_URL}"; \
     wget -q --timeout=120 --tries=3 -O /tmp/rtmdet_nano.zip "${RTMPOSE_ONNX_DET_ZIP}"; \
     unzip -q -j /tmp/rtmdet_nano.zip '*/end2end.onnx' -d /app/localdata/models/rtmpose_onnx/rtmdet_nano; \
     wget -q --timeout=120 --tries=3 -O /tmp/rtmpose_t.zip "${RTMPOSE_ONNX_POSE_ZIP}"; \

@@ -101,10 +101,8 @@ def _validate_config_or_raise(cfg: dict, config_file: str):
     models_cfg = cfg.get("models")
     if isinstance(models_cfg, dict):
         backend = str(models_cfg.get("backend", "rtmpose_onnx")).strip().lower()
-        if backend not in ("mediapipe", "rtmpose_onnx", "lite", "mp", "default"):
-            errors.append(
-                f"models.backend 无效: {backend}，可选 mediapipe 或 rtmpose_onnx（默认）"
-            )
+        if backend not in ("rtmpose_onnx", "lite", "mp", "default", "mediapipe", "mmpose", "mm"):
+            errors.append(f"models.backend 无效: {backend}，当前仅支持 rtmpose_onnx")
 
     if errors:
         msg = [f"配置文件校验失败: {config_file}"]

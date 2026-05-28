@@ -61,6 +61,7 @@ PY
 
 COPY services ./services
 COPY core ./core
+COPY version.json ./version.json
 COPY inference_worker.py ./inference_worker.py
 
 ENV PATH="/opt/conda/bin:${PATH}"

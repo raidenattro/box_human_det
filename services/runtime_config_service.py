@@ -7,7 +7,6 @@ import os
 from typing import Any
 
 from services.inference_backends import (
-    BACKEND_MEDIAPIPE,
     BACKEND_RTMPOSE_ONNX,
     _ALIASES as _INFERENCE_BACKEND_ALIASES,
 )
@@ -36,7 +35,7 @@ CAMERA_OVERRIDE_KEYS = {
 }
 
 _BACKEND_ALIASES = dict(_INFERENCE_BACKEND_ALIASES)
-_ALLOWED_BACKENDS = frozenset({BACKEND_MEDIAPIPE, BACKEND_RTMPOSE_ONNX})
+_ALLOWED_BACKENDS = frozenset({BACKEND_RTMPOSE_ONNX})
 
 
 def _load_json(path: str) -> dict:

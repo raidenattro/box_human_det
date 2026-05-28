@@ -1,6 +1,6 @@
 # 后续：YOLO Pose 后端（实验分支规划）
 
-移除 OpenMMLab **mmpose** 后，计划新增 `yolo_pose` 推理后端（与 `mediapipe`、`rtmpose_onnx` 并列）。
+移除 OpenMMLab **mmpose** / **MediaPipe** 后，计划新增 `yolo_pose` 推理后端（与 `rtmpose_onnx` 并列）。
 
 ## 推荐模型（已确认）
 

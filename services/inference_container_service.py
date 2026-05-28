@@ -7,7 +7,6 @@ import time
 from core.config import load_app_config
 from services.camera_service import normalize_rtsp_url
 from services.inference_backends import (
-    BACKEND_MEDIAPIPE,
     BACKEND_RTMPOSE_ONNX,
     _LITE_BACKENDS,
     resolve_backend_name,
@@ -274,7 +273,7 @@ def _resolve_inference_image(client, backend: str) -> tuple[str, str]:
         return lite or "visual-dps-inference-lite:unknown", backend
 
     if _image_exists(client, lite):
-        return lite, BACKEND_MEDIAPIPE
+        return lite, BACKEND_RTMPOSE_ONNX
     if use_gpu and lite_gpu_onnx:
         return lite_gpu_onnx, BACKEND_RTMPOSE_ONNX
     return lite or "visual-dps-inference-lite:unknown", BACKEND_RTMPOSE_ONNX

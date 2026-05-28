@@ -3,13 +3,8 @@
 export const INFERENCE_BACKEND_OPTIONS = [
   {
     value: 'rtmpose_onnx',
-    label: 'RTMPose-T + RTMDet（ONNX，多路 / GPU 推荐）',
+    label: 'RTMPose-T + RTMDet（ONNX，CPU / GPU）',
     shortLabel: 'RTMPose-T',
-  },
-  {
-    value: 'mediapipe',
-    label: 'MediaPipe Lite（轻量 CPU，本地测试）',
-    shortLabel: 'MediaPipe',
   },
 ];
 
@@ -19,7 +14,7 @@ export const CAMERA_OVERRIDE_FIELDS = [
     label: '推理模型',
     type: 'select',
     options: INFERENCE_BACKEND_OPTIONS,
-    hint: '修改后需重新启动该路智能检测。RTMPose-T 需 inference-lite 镜像。',
+    hint: '修改后需重新启动该路智能检测。需 lite-gpu-onnx 镜像（GPU）或 lite 镜像（CPU）。',
   },
   { key: 'inference.frame_rate', label: '推理帧率 (fps)', type: 'number', min: 1, max: 60 },
   { key: 'inference.height', label: '推理高度 (px)', type: 'number', min: 120, max: 2160 },

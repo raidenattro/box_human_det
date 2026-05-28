@@ -19,9 +19,6 @@
     },
     "models": {
         "backend": "rtmpose_onnx",
-        "mediapipe_model_path": "localdata/models/pose_landmarker_lite.task",
-        "mediapipe_model_url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-        "mediapipe_num_poses": 4
     },
     "inference": {
         "frame_rate": 15,
