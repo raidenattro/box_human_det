@@ -323,8 +323,10 @@ def start_inference_container(camera: dict, request=None) -> dict:
     binds = [
         _host_bind("localdata"),
         _host_bind("app_config.json", read_only=True),
-        _host_bind("core/config.py", read_only=True),
     ]
+    config_host = os.path.join(HOST_PROJECT_ROOT, "core", "config.py")
+    if os.path.isfile(config_host):
+        binds.append(_host_bind("core/config.py", read_only=True))
     effective = get_effective_settings(app_config, camera)
     preset = resolve_model_preset(app_config, overrides=effective)
     infer_image, _family = _resolve_inference_image(client, preset.family)
