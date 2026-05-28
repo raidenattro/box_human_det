@@ -189,33 +189,41 @@ PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 **源机器**
 
 ```bash
-# 先构建镜像，再打离线包（默认含 CPU 推理 + localdata/models）
-./scripts/build-ui-image.sh
-./scripts/build-inference-lite-image.sh   # 可选
-./scripts/download-model-weights.sh     # 推荐，权重进 localdata
+./scripts/download-model-weights.sh     # 权重进 localdata，export 会校验
 
-./scripts/export-offline-package.sh
-# 产出: dist/visual-dps-offline-<时间戳>.tar.gz
+# 完整包（7 镜像 + 权重，自动 --rebuild-ui）
+./scripts/export-offline-complete.sh --split 2G
 
-# 仅 Web+事件（不含推理）: --inference base
-# GPU 推理: --inference gpu-onnx
-# 全部推理镜像: --inference all
+# 或细粒度
+./scripts/export-offline-package.sh --inference all --rebuild-ui
+# 产出: dist/visual-dps-offline-complete-<时间戳>.tar.gz
+# 分卷: dist/visual-dps-offline-complete-<时间戳>.tar.gz.part-000 ...
+
+# 仅 Web+事件: --inference base
 # 不带模型: --no-models
 ```
+
+包内文件：`install.sh`、`verify-package.sh`、`OFFLINE-QUICKSTART.md`、`app/docker-compose.deploy.yml`。
 
 **目标机器**
 
 ```bash
-tar xzf visual-dps-offline-*.tar.gz
-cd visual-dps-offline-*/
-./install.sh    # docker load + compose up -d
+# 若分卷
+cat visual-dps-offline-complete-*.tar.gz.part-* > visual-dps-offline-complete.tar.gz
+
+tar xzf visual-dps-offline-complete-*.tar.gz
+cd visual-dps-offline-complete-*/
+./verify-package.sh
+./install.sh --host 192.168.0.204 --stop-infer
 ```
 
-手动方式仍可用：
+`install.sh` 优先使用 `docker-compose.deploy.yml`（兼容 `docker-compose` v1）；`--stop-infer` 清理旧 `visual-dps-infer-*` 容器。
+
+手动方式：
 
 ```bash
 docker load -i docker-images/bundle.tar
-cd app && docker compose up -d
+cd app && docker-compose -f docker-compose.deploy.yml up -d
 ```
 
 ---
@@ -242,7 +250,8 @@ cd app && docker compose up -d
 | CPU 推理 | `./scripts/build-inference-lite-image.sh` |
 | GPU 推理（基底） | `./scripts/build-inference-lite-gpu-image.sh` |
 | GPU + ONNX 推理 | `./scripts/build-inference-lite-gpu-onnx-image.sh` |
-| **离线 tar 包** | `./scripts/export-offline-package.sh` |
+| **离线 tar 包** | `./scripts/export-offline-package.sh` 或 `./scripts/export-offline-complete.sh` |
+| **包内校验** | `./deploy/verify-package.sh`（打包末自动执行） |
 
 ---
 

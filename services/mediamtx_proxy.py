@@ -18,17 +18,36 @@ MEDIAMTX_WEBRTC_BASE = os.environ.get(
 ).rstrip("/")
 PROXY_TIMEOUT = float(os.environ.get("MEDIAMTX_PROXY_TIMEOUT", "15"))
 MEDIAMTX_PUBLIC_HOST = os.environ.get("MEDIAMTX_PUBLIC_HOST", "127.0.0.1")
-# 容器内网 / RFC1918，浏览器无法直连，需在 WHEP Answer 中改写为 MEDIAMTX_PUBLIC_HOST
+# 容器内网 / RFC1918，浏览器无法直连，需在 WHEP Answer 中改写为浏览器可达地址
 _PRIVATE_IP_RE = re.compile(
     r"\b(?:10(?:\.\d{1,3}){3}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2})\b"
 )
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
 
 
-def _rewrite_webrtc_sdp(body: bytes) -> bytes:
+def _browser_visible_host(request: Request | None) -> str:
+    """浏览器访问 UI 时使用的宿主机 IP（优先 .env，否则从 Host 头推断）。"""
+    env_host = (MEDIAMTX_PUBLIC_HOST or "").strip()
+    if env_host and env_host.lower() not in _LOOPBACK_HOSTS:
+        return env_host
+    if request is not None:
+        raw = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").strip()
+        if raw:
+            host = raw.split(",")[0].strip().split(":")[0].strip().lower()
+            if host and host not in _LOOPBACK_HOSTS and host != "mediamtx":
+                return host
+    return env_host or "127.0.0.1"
+
+
+def _rewrite_webrtc_sdp(body: bytes, request: Request | None = None) -> bytes:
     text = body.decode("utf-8", errors="replace")
-    if not _PRIVATE_IP_RE.search(text):
+    public = _browser_visible_host(request)
+    if not public:
         return body
-    return _PRIVATE_IP_RE.sub(MEDIAMTX_PUBLIC_HOST, text).encode("utf-8")
+    text = _PRIVATE_IP_RE.sub(public, text)
+    if public.lower() not in _LOOPBACK_HOSTS:
+        text = re.sub(r"\b127\.0\.0\.1\b", public, text)
+    return text.encode("utf-8")
 
 
 def _rewrite_m3u8(body: bytes, camera_id: str, path_slug: str) -> bytes:
@@ -102,7 +121,7 @@ async def proxy_whep(path_slug: str, request: Request) -> Response:
     content = upstream.content
     ctype = (out_headers.get("Content-Type") or upstream.headers.get("content-type") or "").lower()
     if upstream.is_success and "sdp" in ctype:
-        content = _rewrite_webrtc_sdp(content)
+        content = _rewrite_webrtc_sdp(content, request)
     return Response(
         content=content,
         status_code=upstream.status_code,
