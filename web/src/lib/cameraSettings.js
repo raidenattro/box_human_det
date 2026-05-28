@@ -2,19 +2,14 @@
 
 export const INFERENCE_BACKEND_OPTIONS = [
   {
-    value: 'mmpose',
-    label: 'MMDet + RTMPose（高精度，需 GPU 推理镜像）',
-    shortLabel: 'RTMPose',
+    value: 'rtmpose_onnx',
+    label: 'RTMPose-T + RTMDet（ONNX，多路 / GPU 推荐）',
+    shortLabel: 'RTMPose-T',
   },
   {
     value: 'mediapipe',
     label: 'MediaPipe Lite（轻量 CPU，本地测试）',
     shortLabel: 'MediaPipe',
-  },
-  {
-    value: 'rtmpose_onnx',
-    label: 'RTMPose-T + RTMDet（CPU / ONNX，多路推荐）',
-    shortLabel: 'RTMPose-T',
   },
 ];
 

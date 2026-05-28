@@ -372,8 +372,13 @@ def read_rtsp_frame_once(url: str, timeout_sec: float | None = None) -> np.ndarr
             return None
         adapter = _OpencvCaptureAdapter(cap)
         try:
-            ok, frame, _ = read_latest_frame(adapter, max_drain=8)
-            return frame if ok and frame is not None else None
+            deadline = time.time() + float(os.environ.get("RTSP_OPEN_TIMEOUT_SEC", "8"))
+            while time.time() < deadline:
+                ok, frame, _ = read_latest_frame(adapter, max_drain=12)
+                if ok and frame is not None:
+                    return frame
+                time.sleep(0.05)
+            return None
         finally:
             adapter.release()
     finally:

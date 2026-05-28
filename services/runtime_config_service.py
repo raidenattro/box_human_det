@@ -8,7 +8,6 @@ from typing import Any
 
 from services.inference_backends import (
     BACKEND_MEDIAPIPE,
-    BACKEND_MMPose,
     BACKEND_RTMPOSE_ONNX,
     _ALIASES as _INFERENCE_BACKEND_ALIASES,
 )
@@ -37,7 +36,7 @@ CAMERA_OVERRIDE_KEYS = {
 }
 
 _BACKEND_ALIASES = dict(_INFERENCE_BACKEND_ALIASES)
-_ALLOWED_BACKENDS = frozenset({BACKEND_MMPose, BACKEND_MEDIAPIPE, BACKEND_RTMPOSE_ONNX})
+_ALLOWED_BACKENDS = frozenset({BACKEND_MEDIAPIPE, BACKEND_RTMPOSE_ONNX})
 
 
 def _load_json(path: str) -> dict:
@@ -122,10 +121,10 @@ def get_public_settings(app_config: dict | None, path: str = DEFAULT_PATH) -> di
         if sec in overlay and isinstance(overlay[sec], dict) and key in overlay[sec]:
             _deep_set(merged, sec, key, overlay[sec][key])
 
-    backend_raw = str(_deep_get(merged, "models", "backend", "mmpose") or "mmpose").strip().lower()
+    backend_raw = str(_deep_get(merged, "models", "backend", "rtmpose_onnx") or "rtmpose_onnx").strip().lower()
     backend = _BACKEND_ALIASES.get(backend_raw, backend_raw)
     if backend not in _ALLOWED_BACKENDS:
-        backend = "mmpose"
+        backend = BACKEND_RTMPOSE_ONNX
 
     return {
         "status": "success",

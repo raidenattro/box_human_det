@@ -1,9 +1,9 @@
 export const STREAM_HEIGHTS = [320, 480, 720];
 export const STREAM_FORMATS = ['mjpeg', 'hls', 'webrtc'];
-export const DEFAULT_STREAM_PREFS = { format: 'mjpeg', height: 480 };
+export const DEFAULT_STREAM_PREFS = { format: 'webrtc', height: 320 };
 
 function storageKey(cameraId) {
-  return `monitorStreamPrefs:${cameraId}`;
+  return `monitorStreamPrefs:v2:${cameraId}`;
 }
 
 export function loadStreamPrefs(cameraId) {

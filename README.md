@@ -55,9 +55,7 @@
 ## 启动
 
 ```bash
-pip install openmim
-mim install "mmengine>=0.10.0" "mmcv>=2.0.0,<2.3.0" "mmdet>=3.0.0,<3.4.0"
-pip install mmpose fastapi "uvicorn[standard]" python-multipart opencv-python-headless numpy psutil
+pip install fastapi "uvicorn[standard]" python-multipart opencv-python-headless numpy psutil redis
 
 python main.py
 ```
@@ -88,14 +86,14 @@ docker compose up -d --build
 
 ## 轻量推理（本地测试平替）
 
-默认使用 **MMDet + MMPose**（`models.backend: mmpose`，镜像 `visual-dps-inference:latest`）。
+默认使用 **RTMPose-T ONNX**（`models.backend: rtmpose_onnx`）；GPU 部署用 `./scripts/build-inference-lite-gpu-onnx-image.sh`（镜像 tag 带日期，见 `AGENTS.md`）。
 
-本地联调可选用 **MediaPipe Pose Lite**（CPU、镜像约数百 MB，无 PyTorch）：
+本地联调可选用 **MediaPipe**（CPU）：
 
 ```bash
 ./scripts/build-inference-lite-image.sh
+# 按脚本输出的 export 设置 INFERENCE_LITE_IMAGE / INFERENCE_LITE_GPU_ONNX_IMAGE
 
-INFERENCE_IMAGE=visual-dps-inference-lite:latest \
 INFERENCE_BACKEND=mediapipe \
   docker compose --profile ui up -d visual-dps-ui
 ```

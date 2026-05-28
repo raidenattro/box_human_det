@@ -237,10 +237,13 @@ def list_cameras_with_status(
 def resolve_camera_id_for_url(camera_ips_file: str, raw_url: str) -> str:
     from services.camera_store import load_cameras
 
+    raw = str(raw_url or "").strip()
+    norm = normalize_rtsp_url(raw)
     for rec in load_cameras(camera_ips_file):
-        if rec.get("url") == raw_url:
+        u = str(rec.get("url") or "").strip()
+        if u == raw or u == norm or normalize_rtsp_url(u) == norm:
             return stable_camera_id(rec)
-    return camera_id_from_url(raw_url)
+    return camera_id_from_url(raw)
 
 
 def capture_camera_frame(
@@ -262,7 +265,13 @@ def capture_camera_frame(
     stream_url = normalize_rtsp_url(raw_url)
     from services.rtsp_capture import read_rtsp_frame_once
 
-    frame = read_rtsp_frame_once(stream_url, timeout_sec=8.0)
+    frame = None
+    for attempt in range(3):
+        frame = read_rtsp_frame_once(stream_url, timeout_sec=10.0)
+        if frame is not None:
+            break
+        if attempt < 2:
+            time.sleep(0.35)
     if frame is None:
         _update_runtime_status(camera_id, False)
         return {"error": "failed to read frame from camera"}

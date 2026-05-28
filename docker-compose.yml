@@ -116,21 +116,14 @@ services:
     restart: unless-stopped
 
   # 以下为推理镜像构建目标（不会随 compose up 自动启动；由 UI 按摄像头 docker run）
-  visual-dps-inference:
-    profiles: ["build-only"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: visual-dps-inference:latest
-    command: ["python", "inference_worker.py"]
-
+  # 镜像 tag 由构建脚本注入 VISUAL_DPS_IMAGE_TAG（见 AGENTS.md / scripts/lib/docker-image-tag.sh）
   visual-dps-inference-lite:
     profiles: ["build-only"]
     build:
       context: .
       dockerfile: Dockerfile.inference-lite
       args: *china-build-args
-    image: visual-dps-inference-lite:latest
+    image: visual-dps-inference-lite:${VISUAL_DPS_IMAGE_TAG:?run via scripts/build-*.sh}
     command: ["python", "inference_worker.py"]
 
   visual-dps-inference-lite-gpu:
@@ -139,7 +132,7 @@ services:
       context: .
       dockerfile: Dockerfile.inference-lite-gpu
       args: *china-build-args
-    image: visual-dps-inference-lite-gpu:latest
+    image: visual-dps-inference-lite-gpu:${VISUAL_DPS_IMAGE_TAG:?run via scripts/build-*.sh}
     command: ["python", "inference_worker.py"]
 
   # 在已有 lite-gpu 上增量 ONNX（国内构建更快，不重复拉 ffmpeg）
@@ -149,7 +142,7 @@ services:
       context: .
       dockerfile: Dockerfile.inference-lite-gpu-onnx
       args: *china-build-args
-    image: visual-dps-inference-lite-gpu-onnx:latest
+    image: visual-dps-inference-lite-gpu-onnx:${VISUAL_DPS_IMAGE_TAG:?run via scripts/build-*.sh}
     command: ["python", "inference_worker.py"]
 
 networks:

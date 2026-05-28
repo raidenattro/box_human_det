@@ -3,18 +3,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck disable=SC1091
-source scripts/lib/load-build-env.sh
-load_build_env "$(pwd)"
+source scripts/lib/docker-build.sh
 
-if ! docker image inspect visual-dps-inference-lite-gpu:latest >/dev/null 2>&1; then
-  echo "缺少基底镜像 visual-dps-inference-lite-gpu:latest，请先: ./scripts/build-inference-lite-gpu-image.sh"
-  exit 1
+BASE_REPO="visual-dps-inference-lite-gpu"
+if ! docker image inspect "${BASE_REPO}:latest" >/dev/null 2>&1; then
+  if ! docker image inspect "$(docker images "${BASE_REPO}" -q | head -1)" >/dev/null 2>&1; then
+    echo "缺少基底镜像 ${BASE_REPO}，请先: ./scripts/build-inference-lite-gpu-image.sh"
+    exit 1
+  fi
 fi
 
-echo "增量构建 visual-dps-inference-lite-gpu-onnx:latest"
-echo "  APT_MIRROR=${APT_MIRROR}"
-echo "  PIP_INDEX=${PIP_INDEX}"
-echo "  GITHUB_PROXY_BASE=${GITHUB_PROXY_BASE:-<直连>}"
-echo "  HTTP_PROXY=${HTTP_PROXY:-<无>}"
-docker compose --profile inference-lite build visual-dps-inference-lite-gpu-onnx
-echo "OK: visual-dps-inference-lite-gpu-onnx:latest"
+visual_dps_compose_build visual-dps-inference-lite-gpu-onnx visual-dps-inference-lite-gpu-onnx inference-lite
