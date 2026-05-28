@@ -68,7 +68,17 @@ class YoloPoseBackend:
         print(f"🚀 正在加载 {weight}（Ultralytics YOLO26-pose）…")
         self._model = YOLO(weight)
         self._device = device
-        print(f"✅ YOLO26-{self._variant}-pose 已就绪: {weight} device={device}")
+        if str(device).strip().lower() not in ("cpu", ""):
+            try:
+                probe = np.zeros((64, 64, 3), dtype=np.uint8)
+                self._model.predict(probe, device=device, verbose=False, conf=0.99)
+            except Exception as exc:
+                print(
+                    f"⚠️ YOLO CUDA 预热失败（{exc!r}），回退 CPU；"
+                    "旧 Pascal GPU 请用 CPU 或换 Turing+ 测 GPU"
+                )
+                self._device = "cpu"
+        print(f"✅ YOLO26-{self._variant}-pose 已就绪: {weight} device={self._device}")
 
     def _infer_sync(self, frame) -> _YoloFrameResult:
         self.ensure_loaded()

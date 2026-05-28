@@ -17,14 +17,29 @@ def _models_dir(app_config: dict) -> str:
     return os.path.join(base, "models", "rtmpose_onnx")
 
 
+def _inference_wants_gpu() -> bool:
+    return os.environ.get("INFERENCE_USE_GPU", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _is_cuda_device(device: str) -> bool:
+    return str(device or "").strip().lower() in ("cuda", "gpu")
+
+
 def _preload_ort_cuda_dlls(device: str) -> None:
-    if str(device or "").strip().lower() not in ("cuda", "gpu"):
+    if not _is_cuda_device(device):
         return
     try:
         import onnxruntime as ort
 
         if hasattr(ort, "preload_dlls"):
-            ort.preload_dlls()
+            try:
+                ort.preload_dlls(cuda=True, cudnn=True)
+            except TypeError:
+                ort.preload_dlls()
     except Exception as exc:
         print(f"⚠️ onnxruntime preload_dlls 失败: {exc}")
 
@@ -72,22 +87,39 @@ class RTMPoseOnnxBackend:
 
         backend = str(models_cfg.get("rtmpose_onnx_ort_backend") or "onnxruntime").strip()
         device = str(models_cfg.get("rtmpose_onnx_device") or "cpu").strip()
-        if os.environ.get("INFERENCE_USE_GPU", "").strip() in ("1", "true", "yes"):
+        if _inference_wants_gpu():
             device = str(models_cfg.get("rtmpose_onnx_device_gpu") or "cuda").strip()
-        _preload_ort_cuda_dlls(device)
 
-        self._det = RTMDet(
-            onnx_model=det_path,
-            model_input_size=det_input_size,
-            backend=backend,
-            device=device,
-        )
-        self._pose = RTMPose(
-            onnx_model=pose_path,
-            model_input_size=pose_input_size,
-            backend=backend,
-            device=device,
-        )
+        def _load_models(dev: str) -> None:
+            if _is_cuda_device(dev):
+                _preload_ort_cuda_dlls(dev)
+            self._det = RTMDet(
+                onnx_model=det_path,
+                model_input_size=det_input_size,
+                backend=backend,
+                device=dev,
+            )
+            self._pose = RTMPose(
+                onnx_model=pose_path,
+                model_input_size=pose_input_size,
+                backend=backend,
+                device=dev,
+            )
+
+        try:
+            _load_models(device)
+        except Exception as exc:
+            if not _is_cuda_device(device):
+                raise
+            print(
+                f"⚠️ RTMPose ONNX CUDA 初始化失败（{exc!r}），回退 CPU；"
+                "旧 Pascal GPU（如 GTX 1080）请用 CPU 或换 Turing+ 显卡测 GPU"
+            )
+            device = "cpu"
+            self._det = None
+            self._pose = None
+            _load_models(device)
+
         print(
             f"✅ RTMPose-{self._variant.upper()} ONNX 已就绪: det={det_path} pose={pose_path} device={device}"
         )
