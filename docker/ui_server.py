@@ -16,12 +16,14 @@ from services.camera_routes import register_camera_routes
 from services.camera_store import load_cameras
 from services.live_bus import live_hub
 from services.mediamtx_service import ensure_mediamtx_config
+from services.version_routes import register_version_routes
 
 app = FastAPI(title="visual-dps-dev")
 api_router = APIRouter(prefix="/api")
 
 AUTH_SETTINGS = load_auth_settings(None)
 register_auth_routes(api_router, None)
+register_version_routes(api_router)
 register_admin_routes(api_router, None)
 app.add_middleware(AuthMiddleware, lambda: AUTH_SETTINGS)
 

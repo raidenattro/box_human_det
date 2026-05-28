@@ -22,6 +22,8 @@ docker-compose.override.yml
 *.mov
 *.mkv
 
+build-cache/
+dist/
 scripts/.local/
 # 本机/WSL 中继实验脚本，不入库
 scripts/relay-to-remote-mediamtx.sh

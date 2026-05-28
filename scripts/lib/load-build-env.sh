@@ -13,6 +13,7 @@ load_build_env() {
   export APT_MIRROR="${APT_MIRROR:-mirrors.aliyun.com}"
   export PIP_INDEX="${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
   export GITHUB_PROXY_BASE="${GITHUB_PROXY_BASE:-}"
+  export OPENMMLAB_MIRROR_BASE="${OPENMMLAB_MIRROR_BASE:-}"
 
   # 构建专用代理（153 等 Linux 机可设；优先于下面自动清理后的 HTTP_PROXY）
   if [[ -n "${BUILD_HTTP_PROXY:-}" ]]; then

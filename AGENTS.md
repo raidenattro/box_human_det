@@ -13,10 +13,10 @@
 ## 推理后端
 
 - 已移除 OpenMMLab **mmpose** 运行时依赖。
-- 当前仅 `rtmpose_onnx`；计划新增 `yolo_pose`（见 `docs/FUTURE-yolo-pose.md`，默认 **YOLO26s-pose**）。
+- `models.backend` 预设：`rtmpose_t|s|m`、`yolo26n|s|m|l_pose`（见 `services/inference_backends/model_registry.py`）。
 - 页脚版本：`GET /api/version` → `UI · API · Event · Infer`；产品号来自根目录 `version.json`。
 
 ## 摄像头流配置
 
-- `source_type`：`external` | `publisher` | `rtsp_pull` | `v4l2`
+- `source_type`：`publisher`（外部推流）| `rtsp_pull`（拉取外部流）| `external`（直连 RTSP）
 - **`rtsp_pull`**：`pull_url` = 上游拉流；`url` = 本机 MediaMTX 播放地址（勿混填）

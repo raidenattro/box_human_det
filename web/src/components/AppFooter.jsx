@@ -4,7 +4,7 @@ import { apiGet } from '../api/client';
 import './AppFooter.css';
 
 function fallbackLine() {
-  return `UI ${APP_VERSION} · API ${APP_VERSION} · Event — · Infer —`;
+  return `UI/API ${APP_VERSION} · Event — · Infer —`;
 }
 
 export default function AppFooter() {

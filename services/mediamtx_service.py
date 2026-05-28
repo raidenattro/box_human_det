@@ -34,12 +34,11 @@ MEDIAMTX_WEBRTC_ICE_PORT = int(os.environ.get("MEDIAMTX_WEBRTC_ICE_PORT", "8189"
 MEDIAMTX_API_URL = os.environ.get("MEDIAMTX_API_URL", "http://127.0.0.1:9997").rstrip("/")
 MEDIAMTX_API_TIMEOUT = float(os.environ.get("MEDIAMTX_API_TIMEOUT", "3"))
 
-SOURCE_V4L2 = "v4l2"
 SOURCE_RTSP_PULL = "rtsp_pull"
 SOURCE_PUBLISHER = "publisher"
 SOURCE_EXTERNAL = "external"
 
-MANAGED_SOURCE_TYPES = {SOURCE_V4L2, SOURCE_RTSP_PULL, SOURCE_PUBLISHER}
+MANAGED_SOURCE_TYPES = {SOURCE_RTSP_PULL, SOURCE_PUBLISHER}
 
 
 def build_playback_url(path: str, host: str | None = None, port: int | None = None) -> str:
@@ -203,40 +202,9 @@ def generate_mediamtx_yaml(cameras: List[dict]) -> str:
             lines.append(f"    source: {pull_url}")
         elif source_type == SOURCE_PUBLISHER:
             lines.append("    source: publisher")
-        elif source_type == SOURCE_V4L2:
-            device = str(cam.get("device") or "/dev/video0").strip()
-            video_size = str(cam.get("video_size") or "640x480").strip()
-            framerate = int(cam.get("framerate") or 15)
-            lines.append("    source: publisher")
-            lines.append("    runOnInit: >")
-            lines.append("      ffmpeg -hide_banner -loglevel warning")
-            lines.append(f"      -f v4l2 -input_format mjpeg -video_size {video_size} -framerate {framerate}")
-            lines.append(f"      -i {device}")
-            lines.append(
-                "      -c:v libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency"
-            )
-            lines.append("      -b:v 800k -maxrate 800k -bufsize 1600k")
-            lines.append(f"      -g {framerate} -f rtsp -rtsp_transport tcp")
-            lines.append("      rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH")
-            lines.append("    runOnInitRestart: yes")
         lines.append("")
 
     return "\n".join(lines)
-
-
-def _v4l2_run_on_init(cam: dict) -> str:
-    device = str(cam.get("device") or "/dev/video0").strip()
-    video_size = str(cam.get("video_size") or "640x480").strip()
-    framerate = int(cam.get("framerate") or 15)
-    return (
-        "ffmpeg -hide_banner -loglevel warning "
-        f"-f v4l2 -input_format mjpeg -video_size {video_size} -framerate {framerate} "
-        f"-i {device} "
-        "-c:v libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency "
-        "-b:v 800k -maxrate 800k -bufsize 1600k "
-        f"-g {framerate} -f rtsp -rtsp_transport tcp "
-        "rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH"
-    )
 
 
 def camera_to_path_conf(cam: dict) -> dict:
@@ -249,12 +217,6 @@ def camera_to_path_conf(cam: dict) -> dict:
         return {"source": str(cam.get("pull_url") or "").strip()}
     if source_type == SOURCE_PUBLISHER:
         return {"source": "publisher"}
-    if source_type == SOURCE_V4L2:
-        return {
-            "source": "publisher",
-            "runOnInit": _v4l2_run_on_init(cam),
-            "runOnInitRestart": True,
-        }
     return {}
 
 

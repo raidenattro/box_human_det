@@ -2,6 +2,7 @@ import InferenceToggle from './InferenceToggle';
 import { CAMERA_OVERRIDE_FIELDS, formatSettingDisplayValue } from '../lib/cameraSettings';
 import {
   CAMERA_SOURCE_TYPES,
+  DEFAULT_SOURCE_TYPE,
   defaultPlaybackUrl,
   sourceTypeLabel,
 } from '../lib/cameraStreamForm';
@@ -54,7 +55,7 @@ export default function CameraSetupDrawer({
           (key === 'debug-info.enabled'
             ? false
             : key === 'models.backend'
-              ? 'rtmpose_onnx'
+              ? 'rtmpose_t'
               : ''),
       });
     } else {
@@ -176,13 +177,16 @@ export default function CameraSetupDrawer({
               <label>
                 流类型
                 <select
-                  value={form.source_type || 'external'}
+                  value={form.source_type || DEFAULT_SOURCE_TYPE}
                   onChange={(e) => {
                     const next = e.target.value;
                     onChange('source_type', next);
-                    if (next === 'publisher' || next === 'rtsp_pull' || next === 'v4l2') {
+                    if (next === 'publisher') {
                       const play = defaultPlaybackUrl(form.path);
                       if (play && !form.url) onChange('url', play);
+                    }
+                    if (next === 'external') {
+                      onChange('pull_url', '');
                     }
                   }}
                 >
@@ -194,7 +198,7 @@ export default function CameraSetupDrawer({
                 </select>
               </label>
               <p className="drawer-field-hint">
-                {CAMERA_SOURCE_TYPES.find((t) => t.value === (form.source_type || 'external'))?.hint}
+                {CAMERA_SOURCE_TYPES.find((t) => t.value === (form.source_type || DEFAULT_SOURCE_TYPE))?.hint}
               </p>
               {form.source_type === 'rtsp_pull' ? (
                 <>
@@ -220,17 +224,6 @@ export default function CameraSetupDrawer({
                   </p>
                 </>
               ) : null}
-              {form.source_type === 'external' ? (
-                <label>
-                  视频流地址 (RTSP)
-                  <input
-                    value={form.url || ''}
-                    onChange={(e) => onChange('url', e.target.value)}
-                    placeholder="rtsp://192.168.1.10:554/live"
-                    required
-                  />
-                </label>
-              ) : null}
               {form.source_type === 'publisher' ? (
                 <label>
                   本机播放地址
@@ -241,26 +234,16 @@ export default function CameraSetupDrawer({
                   />
                 </label>
               ) : null}
-              {form.source_type === 'v4l2' ? (
-                <>
-                  <label>
-                    设备路径
-                    <input
-                      value={form.device || '/dev/video0'}
-                      onChange={(e) => onChange('device', e.target.value)}
-                      placeholder="/dev/video0"
-                      required
-                    />
-                  </label>
-                  <label>
-                    本机播放地址
-                    <input
-                      value={form.url || defaultPlaybackUrl(form.path)}
-                      onChange={(e) => onChange('url', e.target.value)}
-                      placeholder={defaultPlaybackUrl(form.path)}
-                    />
-                  </label>
-                </>
+              {form.source_type === 'external' ? (
+                <label>
+                  视频流地址 (RTSP)
+                  <input
+                    value={form.url || ''}
+                    onChange={(e) => onChange('url', e.target.value)}
+                    placeholder="rtsp://192.168.1.10:554/live"
+                    required
+                  />
+                </label>
               ) : null}
               {!isCreate && form.source_type ? (
                 <DetailRow label="当前流类型" value={sourceTypeLabel(form.source_type)} />

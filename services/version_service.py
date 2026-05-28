@@ -100,16 +100,14 @@ def get_deployment_versions() -> dict:
 
     components = {
         "product": product,
-        "ui": product,
-        "api": product,
+        "ui_api": product,
         "ui_image": ui_image or "—",
         "event_worker": event_image or "—",
         "inference": infer_image or "—",
     }
 
     display_parts = [
-        f"UI {product}",
-        f"API {product}",
+        f"UI/API {product}",
         f"Event {short_image_ref(event_image)}",
         f"Infer {short_image_ref(infer_image)}",
     ]

@@ -20,13 +20,7 @@ REQUIRED_CONFIG_KEYS = {
         "last_frame_file",
     ],
     "video": ["transcode_height", "capture_height"],
-    "models": [
-        "device",
-        "det_config",
-        "det_checkpoint",
-        "pose_config",
-        "pose_checkpoint",
-    ],
+    "models": ["backend"],
     "inference": [
         "frame_rate",
         "height",
@@ -100,9 +94,15 @@ def _validate_config_or_raise(cfg: dict, config_file: str):
 
     models_cfg = cfg.get("models")
     if isinstance(models_cfg, dict):
-        backend = str(models_cfg.get("backend", "rtmpose_onnx")).strip().lower()
-        if backend not in ("rtmpose_onnx", "lite", "mp", "default", "mediapipe", "mmpose", "mm"):
-            errors.append(f"models.backend 无效: {backend}，当前仅支持 rtmpose_onnx")
+        backend = str(models_cfg.get("backend", "rtmpose_t")).strip().lower()
+        try:
+            from services.inference_backends.model_registry import normalize_backend_setting
+
+            normalize_backend_setting(backend)
+        except ValueError:
+            errors.append(f"models.backend 无效: {backend}")
+        except ImportError:
+            pass
 
     if errors:
         msg = [f"配置文件校验失败: {config_file}"]

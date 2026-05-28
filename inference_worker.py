@@ -31,6 +31,9 @@ def _apply_inference_env_overrides(app_config: dict) -> None:
     raw_dbg = os.environ.get("INFERENCE_DEBUG_VISUAL", "").strip().lower()
     if raw_dbg in ("0", "1", "true", "false", "yes", "no", "on", "off"):
         app_config.setdefault("debug-info", {})["enabled"] = raw_dbg in ("1", "true", "yes", "on")
+    raw_backend = os.environ.get("INFERENCE_BACKEND", "").strip()
+    if raw_backend:
+        app_config.setdefault("models", {})["backend"] = raw_backend
 
 
 def _status_path(base_dir: str, camera_id: str) -> str:

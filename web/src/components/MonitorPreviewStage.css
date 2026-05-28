@@ -371,9 +371,11 @@
   height: 100%;
   margin: 0;
   display: block;
-  cursor: crosshair;
+  cursor: grab;
   background: transparent;
   pointer-events: auto;
+  touch-action: none;
+  user-select: none;
   z-index: 5;
 }
 

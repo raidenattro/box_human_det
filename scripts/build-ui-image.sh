@@ -4,6 +4,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
+# shellcheck disable=SC1091
+source scripts/lib/load-build-env.sh
+load_build_env "${ROOT}"
+# shellcheck disable=SC1091
+source scripts/lib/docker-image-tag.sh
+export VISUAL_DPS_IMAGE_TAG="$(visual_dps_image_tag)"
 
 echo "==> 构建前端 (web/dist)..."
 (cd web && npm run build)
@@ -13,7 +19,7 @@ if [[ ! -f web/dist/index.html ]]; then
   exit 1
 fi
 
-echo "==> 构建 Docker 镜像 visual-dps-ui..."
+echo "==> 构建 Docker 镜像 visual-dps-ui（VISUAL_DPS_IMAGE_TAG=${VISUAL_DPS_IMAGE_TAG}）..."
 docker compose build visual-dps-ui visual-dps-event-worker
 
 if [[ "${1:-}" == "--up" ]]; then
@@ -21,7 +27,9 @@ if [[ "${1:-}" == "--up" ]]; then
     echo "错误: 请先 export REDIS_PASSWORD=... 或在本目录创建 .env（可参考 .env.example）" >&2
     exit 1
   fi
-  echo "==> 启动 Redis + UI 容器..."
-  docker compose up -d
-  echo "完成: http://127.0.0.1:8045"
+  echo "==> 启动 compose 服务..."
+  docker compose up -d redis mediamtx visual-dps-ui visual-dps-event-worker
+  PORT="${UI_PORT:-8045}"
+  echo "完成: http://127.0.0.1:${PORT}"
+  echo "版本: curl -s http://127.0.0.1:${PORT}/api/version"
 fi

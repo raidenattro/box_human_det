@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 构建 GPU 推理镜像（apt/pip/github 国内源 + 可选 BUILD_HTTP_PROXY）
 set -euo pipefail
-cd "$(dirname "$0")/.."
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${ROOT}"
 # shellcheck disable=SC1091
 source scripts/lib/docker-build.sh
 

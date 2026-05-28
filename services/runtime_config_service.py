@@ -6,9 +6,10 @@ import json
 import os
 from typing import Any
 
-from services.inference_backends import (
-    BACKEND_RTMPOSE_ONNX,
-    _ALIASES as _INFERENCE_BACKEND_ALIASES,
+from services.inference_backends.model_registry import (
+    ALLOWED_PRESET_IDS,
+    DEFAULT_PRESET_ID,
+    normalize_backend_setting,
 )
 
 DEFAULT_PATH = os.environ.get("RUNTIME_CONFIG_FILE", "localdata/runtime_config.json")
@@ -33,10 +34,6 @@ CAMERA_OVERRIDE_KEYS = {
         "debug-info.enabled",
     )
 }
-
-_BACKEND_ALIASES = dict(_INFERENCE_BACKEND_ALIASES)
-_ALLOWED_BACKENDS = frozenset({BACKEND_RTMPOSE_ONNX})
-
 
 def _load_json(path: str) -> dict:
     if not os.path.isfile(path):
@@ -66,10 +63,7 @@ def _normalize_backend(raw: Any) -> str:
     val = str(raw or "").strip().lower()
     if not val:
         raise ValueError("backend is required")
-    normalized = _BACKEND_ALIASES.get(val, val)
-    if normalized not in _ALLOWED_BACKENDS:
-        raise ValueError(f"backend must be one of: {', '.join(sorted(_ALLOWED_BACKENDS))}")
-    return normalized
+    return normalize_backend_setting(val)
 
 
 def _coerce_setting_value(pub_key: str, raw: Any, typ: type) -> Any:
@@ -120,10 +114,13 @@ def get_public_settings(app_config: dict | None, path: str = DEFAULT_PATH) -> di
         if sec in overlay and isinstance(overlay[sec], dict) and key in overlay[sec]:
             _deep_set(merged, sec, key, overlay[sec][key])
 
-    backend_raw = str(_deep_get(merged, "models", "backend", "rtmpose_onnx") or "rtmpose_onnx").strip().lower()
-    backend = _BACKEND_ALIASES.get(backend_raw, backend_raw)
-    if backend not in _ALLOWED_BACKENDS:
-        backend = BACKEND_RTMPOSE_ONNX
+    backend_raw = str(
+        _deep_get(merged, "models", "backend", DEFAULT_PRESET_ID) or DEFAULT_PRESET_ID
+    ).strip().lower()
+    try:
+        backend = normalize_backend_setting(backend_raw)
+    except ValueError:
+        backend = DEFAULT_PRESET_ID
 
     return {
         "status": "success",

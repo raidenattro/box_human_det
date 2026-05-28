@@ -6,11 +6,14 @@ import time
 
 from core.config import load_app_config
 from services.camera_service import normalize_rtsp_url
-from services.inference_backends import (
+from services.inference_backends import resolve_backend_name
+from services.inference_backends.model_registry import (
     BACKEND_RTMPOSE_ONNX,
-    _LITE_BACKENDS,
-    resolve_backend_name,
+    LITE_BACKEND_FAMILIES,
+    resolve_model_preset,
 )
+
+_LITE_BACKENDS = LITE_BACKEND_FAMILIES
 from services.annotation_service import ensure_camera_annotation_file
 from services.runtime_config_service import get_effective_settings
 
@@ -240,8 +243,9 @@ def _first_local_image(client, repo: str) -> str:
     return sorted(dated or candidates)[-1]
 
 
-def _resolve_inference_image(client, backend: str) -> tuple[str, str]:
-    """返回 (镜像名, 实际后端)。GPU 优先 lite-gpu-onnx；否则 lite / lite-gpu。"""
+def _resolve_inference_image(client, backend_family: str) -> tuple[str, str]:
+    """返回 (镜像名, 后端族)。GPU 优先 lite-gpu-onnx；否则 lite / lite-gpu。"""
+    backend = backend_family
     use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
     lite = INFERENCE_LITE_IMAGE or _first_local_image(client, "visual-dps-inference-lite")
     lite_gpu = INFERENCE_LITE_GPU_IMAGE or _first_local_image(client, "visual-dps-inference-lite-gpu")
@@ -319,10 +323,11 @@ def start_inference_container(camera: dict, request=None) -> dict:
     binds = [
         _host_bind("localdata"),
         _host_bind("app_config.json", read_only=True),
+        _host_bind("core/config.py", read_only=True),
     ]
     effective = get_effective_settings(app_config, camera)
-    backend = resolve_backend_name(app_config, overrides=effective)
-    infer_image, backend = _resolve_inference_image(client, backend)
+    preset = resolve_model_preset(app_config, overrides=effective)
+    infer_image, _family = _resolve_inference_image(client, preset.family)
     use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
     rtsp_backend = os.environ.get("INFERENCE_RTSP_CAPTURE_BACKEND", "").strip()
     if not rtsp_backend:
@@ -332,7 +337,8 @@ def start_inference_container(camera: dict, request=None) -> dict:
         "INFERENCE_CAMERA_ID": camera_id,
         "INFERENCE_STREAM_URL": _stream_url_for_container(stream_url),
         "INFERENCE_JSON_PATH": f"/app/{json_rel}",
-        "INFERENCE_BACKEND": backend,
+        "INFERENCE_BACKEND": preset.id,
+        "INFERENCE_USE_GPU": "1" if use_gpu else "0",
         "MEDIAMTX_INTERNAL_HOST": os.environ.get("MEDIAMTX_INTERNAL_HOST", "mediamtx"),
         "INFERENCE_FRAME_RATE": str(effective.get("inference.frame_rate", 15)),
         "INFERENCE_HEIGHT": str(effective.get("inference.height", 480)),
@@ -426,7 +432,7 @@ def start_inference_container(camera: dict, request=None) -> dict:
                 "message": "正在启动",
                 "updated_at": time.time(),
                 "stream_url": stream_url,
-                "backend": backend,
+                "backend": preset.family,
             },
             f,
             ensure_ascii=False,

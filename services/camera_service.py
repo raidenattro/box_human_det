@@ -206,7 +206,7 @@ def enrich_camera_items(
                 "activity_seconds": status["activity_seconds"],
                 "last_frame_at": last_frame_at,
                 "has_thumbnail": os.path.exists(thumb_path),
-                "mediamtx_managed": item.get("source_type") in ("v4l2", "rtsp_pull", "publisher"),
+                "mediamtx_managed": item.get("source_type") in ("rtsp_pull", "publisher"),
             }
         )
     if with_inference:
