@@ -90,7 +90,8 @@ cd <包根目录>
 | 仅更新权重 | 单独同步 `weights/`（~276M），不必重打 bundle |
 
 ```bash
-rsync -av --progress dist/visual-dps-offline-complete-*/ user@host:/opt/visual-dps-pkg/
+# 153 测试机固定账号（勿用 xu@ / sugar@）
+rsync -av --progress dist/visual-dps-offline-complete-*/ hqit@192.168.1.153:~/workspace/visual-dps-0529/
 ```
 
 ## 校验与排错

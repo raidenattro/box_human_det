@@ -33,3 +33,9 @@ docker cp web/dist/. visual-dps-ui:/app/web/dist/
 ```
 
 改 Dockerfile/依赖时用 `./scripts/build-ui-image.sh`（或 `--up`）。细则见 `.cursor/rules/build-deploy-after-change.mdc`。
+
+## 153 异地机（固定）
+
+- **SSH**：`hqit@192.168.1.153`（勿用 `xu@` / `sugar@`）
+- **常用目录**：`~/workspace/visual-dps` 或测试包 `~/workspace/visual-dps-0529`
+- **rsync 示例**：`rsync -av --progress dist/visual-dps-offline-complete-*/ hqit@192.168.1.153:~/workspace/visual-dps-0529/`
