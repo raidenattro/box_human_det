@@ -347,6 +347,7 @@ def start_inference_container(camera: dict, request=None) -> dict:
         "INFERENCE_POSE_FRAME_INTERVAL": str(effective.get("inference.pose_frame_interval", 3)),
         "INFERENCE_DEBUG_VISUAL": "1" if effective.get("debug-info.enabled") else "0",
         "RTSP_CAPTURE_BACKEND": rtsp_backend,
+        "RTSP_FRAME_BUFFER_TTL_SEC": os.environ.get("RTSP_FRAME_BUFFER_TTL_SEC", "1").strip() or "1",
         # 与 event-worker 的 POSE_DELIVERY=stream 对齐（推理 XADD pose:stream）
         "POSE_DELIVERY": os.environ.get("POSE_DELIVERY", "stream").strip() or "stream",
         "POSE_STREAM_KEY": os.environ.get("POSE_STREAM_KEY", "pose:stream"),

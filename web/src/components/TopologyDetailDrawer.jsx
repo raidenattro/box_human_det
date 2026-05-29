@@ -115,13 +115,43 @@ export default function TopologyDetailDrawer({
                         ? `OK ${rt.infer_stream_probe.latency_ms ?? ''}ms`
                         : rt.infer_stream_probe?.error || '—',
                     ],
-                    ['外部有流提示', rt.external_publish_hint],
+                    ['外部有流提示', rt.external_publish_hint || '—'],
                     ['MTX ready', mtx.ready ? '是' : '否'],
                     ['MTX 入站', mtx.bytes_received],
                     ['推理状态', inf.status],
                     ['后端', inf.backend],
                     ['容器', inf.container_name],
                     ['容器 IP', inf.ip],
+                  ]}
+                />
+              </DetailSection>
+
+              <DetailSection title="Pose / 事件">
+                <KvList
+                  rows={[
+                    [
+                      'pose 年龄',
+                      rt.pose?.last_ts_age_sec != null
+                        ? `${rt.pose.last_ts_age_sec}s`
+                        : '—',
+                    ],
+                    ['pose frame_idx', rt.pose?.frame_idx ?? '—'],
+                    [
+                      'pose 发布中',
+                      rt.pose?.publishing == null ? '—' : rt.pose.publishing ? '是' : '否',
+                    ],
+                    [
+                      '关键点冻结',
+                      rt.pose?.frozen == null ? '—' : rt.pose.frozen ? '是（旧帧）' : '否',
+                    ],
+                    ['stream Δframe', rt.pose?.recent_frame_delta ?? '—'],
+                    [
+                      'event pose 年龄',
+                      path.event?.last_pose_age_sec != null
+                        ? `${path.event.last_pose_age_sec}s`
+                        : '—',
+                    ],
+                    ['event-worker', path.event?.worker_container || '—'],
                   ]}
                 />
               </DetailSection>

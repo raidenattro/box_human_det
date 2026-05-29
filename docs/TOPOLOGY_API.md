@@ -235,6 +235,8 @@
 | `MTX_PATH_NOT_READY` | path 无 publisher，`ready=false` |
 | `INFER_STREAM_MISMATCH` | infer 拉的 URL 与「有流」实例不一致 |
 | `INFER_NO_FRAMES` | infer running 但 `stream_url` 探测失败 |
+| `INFER_POSE_FROZEN` | 有推流且 infer 在跑，但 stream 连续帧 `frame_idx` 增加而 `persons` 不变（缓冲旧帧） |
+| `POSE_STALE` | infer 运行中但 Redis pose 快照超过 `TOPOLOGY_POSE_STALE_SEC`（默认 3s）未更新 |
 | `INFER_GPU_UNAVAILABLE` | 容器无 GPU 但配置期望 GPU |
 | `ANNOTATION_URL_MISMATCH` | `annotation camera_url` 与 `stream_url` 主机不一致 |
 | `DOCKER_UNAVAILABLE` | UI 无法访问 docker.sock |

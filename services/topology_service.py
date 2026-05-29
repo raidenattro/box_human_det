@@ -25,10 +25,18 @@ from services.mediamtx_service import (
     _mediamtx_api,
     build_camera_playback_urls,
 )
-from services.pose_bus import POSE_STREAM_GROUP, POSE_STREAM_KEY
+from services.pose_bus import (
+    POSE_STREAM_GROUP,
+    POSE_STREAM_KEY,
+    get_pose_snapshot,
+    list_recent_pose_frames,
+)
 
 POLL_RECOMMENDED_MS = 10000
 _SCHEMA = 1
+_TOPOLOGY_POSE_STALE_SEC = max(
+    1.0, float(os.environ.get("TOPOLOGY_POSE_STALE_SEC", "3"))
+)
 
 _COMPOSE_CONTAINERS = (
     ("visual-dps-mediamtx", "mediamtx", "mediamtx"),
@@ -272,6 +280,46 @@ def _issue(code: str, severity: str, message: str, hint: str = "", camera_id: st
     if camera_id:
         out["camera_id"] = camera_id
     return out
+
+
+def _assess_pose_status(
+    camera_id: str,
+    *,
+    generated_at: float,
+    infer_running: bool,
+    mtx_ready: bool,
+) -> dict[str, Any]:
+    """根据 Redis pose 快照与 stream 最近帧判断发布是否新鲜、是否冻结在旧画面。"""
+    snap = get_pose_snapshot(camera_id) if infer_running else None
+    ts = float(snap["ts"]) if snap and snap.get("ts") is not None else None
+    age_sec = round(generated_at - ts, 2) if ts is not None else None
+    publishing = age_sec is not None and age_sec <= _TOPOLOGY_POSE_STALE_SEC
+
+    frozen = False
+    recent_frame_delta: int | None = None
+    recent = list_recent_pose_frames(camera_id, limit=6) if infer_running else []
+    if len(recent) >= 2:
+        newest, older = recent[0], recent[1]
+        fi_n = newest.get("frame_idx")
+        fi_o = older.get("frame_idx")
+        if fi_n is not None and fi_o is not None:
+            try:
+                recent_frame_delta = int(fi_n) - int(fi_o)
+            except (TypeError, ValueError):
+                recent_frame_delta = None
+            if recent_frame_delta and (newest.get("persons") or []) == (older.get("persons") or []):
+                frozen = True
+
+    expect_pose = bool(infer_running and mtx_ready)
+    return {
+        "snapshot_present": snap is not None,
+        "last_ts_age_sec": age_sec,
+        "frame_idx": snap.get("frame_idx") if snap else None,
+        "publishing": publishing,
+        "frozen": frozen,
+        "recent_frame_delta": recent_frame_delta,
+        "expect_pose": expect_pose,
+    }
 
 
 def build_topology_overview(
@@ -543,6 +591,54 @@ def build_topology_overview(
                 )
             )
 
+        infer_running = infer_status.get("status") in ("running", "starting")
+        pose_status = _assess_pose_status(
+            cid,
+            generated_at=generated_at,
+            infer_running=infer_running,
+            mtx_ready=mtx_ready,
+        )
+        last_pose_age_sec = pose_status.get("last_ts_age_sec")
+
+        if pose_status.get("expect_pose"):
+            if pose_status.get("frozen"):
+                path_issues.append("INFER_POSE_FROZEN")
+                path_health = "error"
+                issues.append(
+                    _issue(
+                        "INFER_POSE_FROZEN",
+                        "error",
+                        "有推流且推理在跑，但 pose 关键点不随帧变化",
+                        "多为 infer 仍消费 RTSP 缓冲旧帧；请重启该路推理容器（visual-dps-infer-"
+                        f"{cid}）或先停推流等待缓冲 TTL 后再恢复",
+                        camera_id=cid,
+                    )
+                )
+            elif not pose_status.get("publishing"):
+                path_issues.append("POSE_STALE")
+                if path_health == "ok":
+                    path_health = "warn"
+                issues.append(
+                    _issue(
+                        "POSE_STALE",
+                        "warn",
+                        f"推理运行中但 Redis 无新鲜 pose（>{_TOPOLOGY_POSE_STALE_SEC:.0f}s 未更新）",
+                        "检查 infer 是否拉流成功、RTSP_FRAME_BUFFER_TTL 是否已过期清帧",
+                        camera_id=cid,
+                    )
+                )
+
+        pose_edge_health = "unknown"
+        if infer_running:
+            if pose_status.get("frozen"):
+                pose_edge_health = "error"
+            elif pose_status.get("publishing"):
+                pose_edge_health = "ok"
+            elif pose_status.get("expect_pose"):
+                pose_edge_health = "warn"
+            else:
+                pose_edge_health = "unknown"
+
         src_health = "ok" if mtx_ready else ("warn" if playback_probe.get("reachable") else "error")
         src_id = f"source:{cid}"
         nodes[src_id] = _node(
@@ -556,7 +652,6 @@ def build_topology_overview(
         )
 
         infer_id = f"infer:{cid}"
-        infer_running = infer_status.get("status") in ("running", "starting")
         docker_status = infer_status.get("status", "stopped")
         if docker_status == "running":
             if path_health == "error":
@@ -629,7 +724,11 @@ def build_topology_overview(
                     protocol="redis_stream",
                     role="pose",
                     endpoint=f"{redis_masked} · XADD {POSE_STREAM_KEY}",
-                    health="unknown",
+                    health=pose_edge_health,
+                    meta={
+                        "pose_age_sec": last_pose_age_sec,
+                        "pose_frozen": bool(pose_status.get("frozen")),
+                    },
                 )
             )
 
@@ -664,6 +763,7 @@ def build_topology_overview(
                     "infer_stream_url": infer_stream,
                     "infer_stream_probe": infer_stream_probe,
                     "external_publish_hint": external_hint,
+                    "pose": pose_status,
                 },
                 "mediamtx": {
                     "path": path_name,
@@ -692,7 +792,7 @@ def build_topology_overview(
                         "EVENT_WORKER_CONSUMER_NAME", "event-worker-1"
                     ),
                     "redis_url": redis_masked,
-                    "last_pose_age_sec": None,
+                    "last_pose_age_sec": last_pose_age_sec,
                 },
                 "health": path_health,
                 "issues": path_issues,
@@ -723,6 +823,11 @@ def build_topology_overview(
         seen.add(key)
         deduped_issues.append(it)
 
+    redis_pose_ok = any(
+        (p.get("runtime") or {}).get("pose", {}).get("snapshot_present")
+        for p in paths_out
+    )
+
     return {
         "schema": _SCHEMA,
         "status": "success",
@@ -731,7 +836,7 @@ def build_topology_overview(
         "capabilities": {
             "docker": docker_ok,
             "mediamtx_api": mtx_api_ok,
-            "redis_info": False,
+            "redis_info": redis_pose_ok,
         },
         "graph": {"nodes": list(nodes.values()), "edges": edges},
         "paths": paths_out,

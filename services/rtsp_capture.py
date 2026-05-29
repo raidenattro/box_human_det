@@ -17,6 +17,9 @@ from services.latest_frame_buffer import LatestFrameBuffer
 _DEFAULT_FFMPEG_OPTS = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0"
 _LOW_LATENCY_FFMPEG_OPTS = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS", _DEFAULT_FFMPEG_OPTS)
 _DRAIN_MAX = max(2, int(os.environ.get("RTSP_DRAIN_MAX", "12")))
+_RTSP_RECONNECT_FAIL_STREAK = max(
+    30, int(os.environ.get("RTSP_RECONNECT_FAIL_STREAK", "90"))
+)
 
 
 def apply_low_latency_ffmpeg_env() -> None:
@@ -192,6 +195,7 @@ class _OpencvRtspCapture:
 
     def __init__(self, url: str, buffer_size: int = 1):
         self.url = url
+        self._buffer_size = max(1, int(buffer_size))
         self._buffer = LatestFrameBuffer()
         self._cap: cv2.VideoCapture | None = None
         self._opened = False
@@ -200,7 +204,7 @@ class _OpencvRtspCapture:
         apply_low_latency_ffmpeg_env()
         self._cv_cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         try:
-            self._cv_cap.set(cv2.CAP_PROP_BUFFERSIZE, max(1, int(buffer_size)))
+            self._cv_cap.set(cv2.CAP_PROP_BUFFERSIZE, self._buffer_size)
         except Exception:
             pass
 
@@ -219,19 +223,44 @@ class _OpencvRtspCapture:
         self._reader.start()
         return True
 
+    def _reconnect_cv_cap(self) -> cv2.VideoCapture | None:
+        if self._cv_cap is not None:
+            try:
+                self._cv_cap.release()
+            except Exception:
+                pass
+        apply_low_latency_ffmpeg_env()
+        cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, self._buffer_size)
+        except Exception:
+            pass
+        self._cv_cap = cap
+        return cap if cap.isOpened() else None
+
     def _read_loop(self) -> None:
         cap = self._cv_cap
         idle_sleep = 0.01
         fail_streak = 0
         while not self._stop.is_set():
             if cap is None or not cap.isOpened():
-                break
+                cap = self._reconnect_cv_cap()
+                if cap is None:
+                    time.sleep(0.5)
+                    continue
             ok, frame = cap.read()
             if ok and frame is not None and frame.size > 0:
                 self._buffer.update(frame.copy())
                 fail_streak = 0
             else:
                 fail_streak += 1
+                if fail_streak >= _RTSP_RECONNECT_FAIL_STREAK:
+                    print(f"⚠️ RTSP 读帧连续失败，重连: {self.url}")
+                    fail_streak = 0
+                    cap = self._reconnect_cv_cap()
+                    if cap is None:
+                        time.sleep(0.5)
+                    continue
                 if fail_streak > 30:
                     time.sleep(0.05)
                 else:

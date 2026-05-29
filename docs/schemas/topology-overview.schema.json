@@ -124,12 +124,25 @@
         "whep": { "type": "string" }
       }
     },
+    "PosePipelineStatus": {
+      "type": "object",
+      "properties": {
+        "snapshot_present": { "type": "boolean" },
+        "last_ts_age_sec": { "type": ["number", "null"] },
+        "frame_idx": { "type": ["integer", "null"] },
+        "publishing": { "type": "boolean" },
+        "frozen": { "type": "boolean" },
+        "recent_frame_delta": { "type": ["integer", "null"] },
+        "expect_pose": { "type": "boolean" }
+      }
+    },
     "RuntimeEndpoints": {
       "type": "object",
       "properties": {
         "infer_stream_url": { "type": "string" },
         "infer_stream_probe": { "$ref": "#/$defs/StreamProbe" },
-        "external_publish_hint": { "type": "string" }
+        "external_publish_hint": { "type": "string" },
+        "pose": { "$ref": "#/$defs/PosePipelineStatus" }
       }
     },
     "MediamtxPathStatus": {

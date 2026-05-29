@@ -70,6 +70,8 @@ flowchart TB
 | infer `stream_url` probe | 可达 | 404 → 空转无骨架 |
 | 配置 URL 与 infer URL | 同一 MTX 实例 | 推到 `192.168.x.x`，拉 `mediamtx` |
 | infer → Redis | XADD 有增量 | worker 无 pose 输入 |
+| pose 新鲜度 | `last_ts_age_sec` ≤ 阈值且未 `frozen` | `INFER_POSE_FROZEN`：有流但关键点不随帧变 |
+| pose 停更 | MTX 有流但 snapshot 过期 | `POSE_STALE`：infer 未再 publish |
 
 ---
 
