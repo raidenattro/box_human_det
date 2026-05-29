@@ -6,23 +6,8 @@ _CHECK_SPEC="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/model-weig
 # shellcheck source=deploy/model-weights-spec.sh
 source "${_CHECK_SPEC}"
 
-visual_dps_check_model_weights() {
-  local base="${1:-}"
-  if [[ "${VISUAL_DPS_CHECK_MODELS:-1}" == "0" ]]; then
-    return 0
-  fi
-  if [[ -z "${base}" ]]; then
-    echo "错误: visual_dps_check_model_weights 需要 localdata 目录路径" >&2
-    return 2
-  fi
-
-  local models_dir="${base%/}/models"
-  if [[ ! -d "${models_dir}" ]]; then
-    echo "错误: 缺少目录 ${models_dir}" >&2
-    visual_dps_print_required_model_files
-    return 1
-  fi
-
+_visual_dps_check_models_dir_impl() {
+  local models_dir="${1:-}"
   local rel path need size missing=0 total=0
   while IFS= read -r rel; do
     [[ -n "${rel}" ]] || continue
@@ -48,6 +33,39 @@ visual_dps_check_model_weights() {
   fi
   echo "权重完整: ${total}/${total} 项通过体积校验"
   return 0
+}
+
+# 检查 .../localdata（其下须有 models/）
+visual_dps_check_model_weights() {
+  local base="${1:-}"
+  if [[ "${VISUAL_DPS_CHECK_MODELS:-1}" == "0" ]]; then
+    return 0
+  fi
+  if [[ -z "${base}" ]]; then
+    echo "错误: visual_dps_check_model_weights 需要 localdata 目录路径" >&2
+    return 2
+  fi
+  local models_dir="${base%/}/models"
+  if [[ ! -d "${models_dir}" ]]; then
+    echo "错误: 缺少目录 ${models_dir}" >&2
+    visual_dps_print_required_model_files
+    return 1
+  fi
+  _visual_dps_check_models_dir_impl "${models_dir}"
+}
+
+# 检查离线包 weights/ 或任意 models 树（路径即 models 根）
+visual_dps_check_models_dir() {
+  local models_dir="${1:-}"
+  if [[ "${VISUAL_DPS_CHECK_MODELS:-1}" == "0" ]]; then
+    return 0
+  fi
+  if [[ -z "${models_dir}" ]] || [[ ! -d "${models_dir}" ]]; then
+    echo "错误: visual_dps_check_models_dir 需要 models 目录路径" >&2
+    visual_dps_print_required_model_files
+    return 1
+  fi
+  _visual_dps_check_models_dir_impl "${models_dir%/}"
 }
 
 visual_dps_print_required_model_files() {

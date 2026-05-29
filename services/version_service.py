@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import os
 
-from core.product_version import format_product_version, short_image_ref
+from core.product_version import (
+    format_image_version_display,
+    format_product_version,
+    is_opaque_image_id,
+)
 
 
 def _docker_client():
@@ -16,16 +20,29 @@ def _docker_client():
         return None
 
 
+def _repo_tag_from_image_id(image_id: str, client) -> str:
+    try:
+        info = client.api.inspect_image(image_id)
+        tags = [str(t) for t in (info.get("RepoTags") or []) if t]
+    except Exception:
+        return ""
+    if not tags:
+        return ""
+    dated = sorted(t for t in tags if ":latest" not in t)
+    return dated[-1] if dated else tags[0]
+
+
 def _running_container_image(container_name: str) -> str:
+    """优先 Config.Image（如 repo:latest），避免 SDK image.tags 为空时落到短 ID。"""
     client = _docker_client()
     if not client:
         return ""
     try:
         c = client.containers.get(container_name)
-        tags = list(c.image.tags or [])
-        if tags:
-            return tags[0]
-        return str(c.image.short_id or "")
+        cfg = str((c.attrs.get("Config") or {}).get("Image") or "").strip()
+        if cfg and not is_opaque_image_id(cfg):
+            return cfg
+        return _repo_tag_from_image_id(c.image.id, client) or cfg
     except Exception:
         return ""
 
@@ -60,11 +77,33 @@ def _first_local_image(client, repo: str) -> str:
     return sorted(dated or candidates)[-1]
 
 
+def _running_inference_image_ref(client) -> str:
+    """取任一路在跑推理容器的镜像名（通常为带日期的 tag）。"""
+    try:
+        refs: list[str] = []
+        for c in client.containers.list(
+            filters={"label": "visual-dps.role=inference", "status": "running"}
+        ):
+            cfg = str((c.attrs.get("Config") or {}).get("Image") or "").strip()
+            if cfg and not is_opaque_image_id(cfg):
+                refs.append(cfg)
+        if refs:
+            dated = sorted(r for r in refs if ":latest" not in r)
+            return dated[-1] if dated else sorted(refs)[0]
+    except Exception:
+        pass
+    return ""
+
+
 def _resolve_inference_image_ref() -> str:
     client = _docker_client()
     onnx_env = os.environ.get("INFERENCE_LITE_GPU_ONNX_IMAGE", "").strip()
     gpu_env = os.environ.get("INFERENCE_LITE_GPU_IMAGE", "").strip()
     lite_env = os.environ.get("INFERENCE_LITE_IMAGE", "").strip()
+    if client:
+        running = _running_inference_image_ref(client)
+        if running:
+            return running
     if not client:
         return onnx_env or gpu_env or lite_env
     use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
@@ -98,18 +137,25 @@ def get_deployment_versions() -> dict:
     )
     infer_image = _resolve_inference_image_ref()
 
+    ui_label = format_image_version_display(ui_image)
+    event_label = format_image_version_display(event_image)
+    infer_label = format_image_version_display(infer_image)
+
     components = {
         "product": product,
         "ui_api": product,
         "ui_image": ui_image or "—",
         "event_worker": event_image or "—",
         "inference": infer_image or "—",
+        "ui_image_display": ui_label,
+        "event_worker_display": event_label,
+        "inference_display": infer_label,
     }
 
     display_parts = [
         f"UI/API {product}",
-        f"Event {short_image_ref(event_image)}",
-        f"Infer {short_image_ref(infer_image)}",
+        f"Event {event_label}",
+        f"Infer {infer_label}",
     ]
     return {
         "status": "success",

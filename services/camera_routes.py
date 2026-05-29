@@ -49,6 +49,7 @@ from services.annotation_service import (
 )
 from services.runtime_config_service import get_camera_settings_payload
 from services.matrix_service import build_matrix_overview
+from services.topology_service import build_topology_overview
 
 
 def register_camera_routes(
@@ -78,6 +79,21 @@ def register_camera_routes(
             json_dir,
             default_json_file,
             frames_dir=frames_dir,
+        )
+
+    @router.get("/topology/overview")
+    async def topology_overview(probe: bool = False):
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: build_topology_overview(
+                camera_ips_file,
+                json_dir,
+                default_json_file,
+                probe=probe,
+            ),
         )
 
     def _attach_list_items(result: dict, *, probe: bool = False) -> dict:

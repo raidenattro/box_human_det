@@ -184,47 +184,31 @@ PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 
 ---
 
-## 7. 导出 / 导入（推荐一键脚本）
+## 7. 导出 / 导入（v2 布局）
 
 **源机器**
 
 ```bash
-./scripts/download-model-weights.sh     # 权重进 localdata，export 会校验
+./scripts/download-model-weights.sh
 
-# 完整包（7 镜像 + 权重，自动 --rebuild-ui）
-./scripts/export-offline-complete.sh --split 2G
+# 全量通用包（默认目录，不 gzip 整包）
+./scripts/export-offline-complete.sh
 
-# 或细粒度
-./scripts/export-offline-package.sh --inference all --rebuild-ui
-# 产出: dist/visual-dps-offline-complete-<时间戳>.tar.gz
-# 分卷: dist/visual-dps-offline-complete-<时间戳>.tar.gz.part-000 ...
-
-# 仅 Web+事件: --inference base
-# 不带模型: --no-models
+# 外传: --archive tar.gz --compress pigz
+# 仅 Web+事件: --inference base --no-models
 ```
 
-包内文件：`install.sh`、`verify-package.sh`、`OFFLINE-QUICKSTART.md`、`app/docker-compose.deploy.yml`。
+详见 `.cursor/skills/visual-dps-offline-package/SKILL.md`。
 
 **目标机器**
 
 ```bash
-# 若分卷
-cat visual-dps-offline-complete-*.tar.gz.part-* > visual-dps-offline-complete.tar.gz
-
-tar xzf visual-dps-offline-complete-*.tar.gz
 cd visual-dps-offline-complete-*/
 ./verify-package.sh
-./install.sh --host 192.168.0.204 --stop-infer
+./install.sh --host <IP> --stop-infer
 ```
 
-`install.sh` 优先使用 `docker-compose.deploy.yml`（兼容 `docker-compose` v1）；`--stop-infer` 清理旧 `visual-dps-infer-*` 容器。
-
-手动方式：
-
-```bash
-docker load -i docker-images/bundle.tar
-cd app && docker-compose -f docker-compose.deploy.yml up -d
-```
+`weights/` → `app/localdata/models/`。旧版单 tar.gz 包仍兼容。
 
 ---
 
@@ -233,7 +217,7 @@ cd app && docker-compose -f docker-compose.deploy.yml up -d
 - [ ] 已安装 Docker + Compose v2
 - [ ] 已 `docker load` 全部必需镜像（`docker images` 核对上表）
 - [ ] 项目根含 `.env`、`app_config.json`、`localdata/camera_ips.json`
-- [ ] `localdata/models/` 权重齐全且完整（打包前 `./scripts/download-model-weights.sh` 会通过校验）
+- [ ] `weights/` 或 `localdata/models/` 权重齐全（`./verify-package.sh`）
 - [ ] `MEDIAMTX_PUBLIC_HOST` 与防火墙已放行 8045、8554、8888、8889、8189
 - [ ] UI 容器能访问 `/var/run/docker.sock`（开启检测时需要）
 - [ ] 在项目根执行：`docker compose up -d`
@@ -250,8 +234,10 @@ cd app && docker-compose -f docker-compose.deploy.yml up -d
 | CPU 推理 | `./scripts/build-inference-lite-image.sh` |
 | GPU 推理（基底） | `./scripts/build-inference-lite-gpu-image.sh` |
 | GPU + ONNX 推理 | `./scripts/build-inference-lite-gpu-onnx-image.sh` |
-| **离线 tar 包** | `./scripts/export-offline-package.sh` 或 `./scripts/export-offline-complete.sh` |
-| **包内校验** | `./deploy/verify-package.sh`（打包末自动执行） |
+| **离线包（v2 目录）** | `./scripts/export-offline-complete.sh` |
+| **权重清单** | `./deploy/generate-weights-manifest.sh weights/` |
+| **包内校验** | `./verify-package.sh`（打包末自动执行） |
+| **Skill** | `.cursor/skills/visual-dps-offline-package/SKILL.md` |
 
 ---
 

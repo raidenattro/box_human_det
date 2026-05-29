@@ -46,14 +46,16 @@
      - 验证：`pose:stream` 有写入，`event:snapshot:cam2` 正常更新（cam2 需有 RTSP 源与货框标注）。
    - **备注**：cam5/7/8 等若无货框标注仍不会有区域事件；无 RTSP 推流的摄像头推理容器会退出，需 `./scripts/start-mp4-rtsp-multi.sh` 或实机推流。
 
-2. **已澄清：「开启检测」到底开了什么？**（总览/监控页「开启智能检测」→ `POST /api/cameras/{id}/inference/start`）
+2. **服务拓扑页（已实现）** — 导航「服务拓扑」`/topology`，API `GET /api/topology/overview`，展示推流/MTX/推理/Redis/event-worker 链路与地址一致性（约 2.5s 轮询）。契约见 [`docs/TOPOLOGY_API.md`](docs/TOPOLOGY_API.md)。
+
+3. **已澄清：「开启检测」到底开了什么？**（总览/监控页「开启智能检测」→ `POST /api/cameras/{id}/inference/start`）
    - **会新增**：每路一个推理容器 `visual-dps-infer-{camera_id}`（标签 `visual-dps.role=inference`），进程读 RTSP → 检测 + 17 点姿态 → Redis `pose:live:*`；不在 `docker compose` 常驻服务表里，需用 `docker ps --filter "label=visual-dps.role=inference"` 查看。
    - **不会新增**：`visual-dps-event-worker`（compose 已常驻，读姿态 + 标注做碰撞/报警/Java 回调）、redis、mediamtx、ui。
    - **与预览无关**：HLS/WebRTC 不依赖检测开关；骨架/碰撞 overlay 需该路推理在跑且 event-worker 正常。
    - **若看不到容器**：启动失败看 UI 报错；先构建推理镜像；UI 需挂 `/var/run/docker.sock`；秒退查 `docker ps -a` 与 `localdata/inference/{id}.status.json`。
    - **旧路径**：上传视频的 `POST /api/start_inference` 为进程内推理，不起 Docker 容器（与当前按路容器模式不同）。详见 [docs/DEPLOY.md](./docs/DEPLOY.md)、[docs/PIPELINE_SPLIT.md](./docs/PIPELINE_SPLIT.md)。
 
-3. ~~监控界面上的“开启检测”开关，旁边默认显示一横，表示全局没有配模型？但实际上全局配好了的，有些摄像头有问题，不全是。另外摄像头个性配置中选择了指定的算法，监控界面上也不会变，很奇怪！需要核实并解决。~~ 似乎已经解决了，现在的问题就是更新话覆盖模型后，如果启动失败会自动fallback到全局默认。
+4. ~~监控界面上的“开启检测”开关，旁边默认显示一横，表示全局没有配模型？但实际上全局配好了的，有些摄像头有问题，不全是。另外摄像头个性配置中选择了指定的算法，监控界面上也不会变，很奇怪！需要核实并解决。~~ 似乎已经解决了，现在的问题就是更新话覆盖模型后，如果启动失败会自动fallback到全局默认。
 
 4. **CPU 姿态模型（已实现 RTMPose-t ONNX）** — 后端名 `rtmpose_onnx`（RTMDet-nano + RTMPose-t，ONNX Runtime，COCO-17）；UI「推理模型」可选；需 `visual-dps-inference-lite` 镜像。调研备选（未集成）：RTMPose-s、MoveNet Lightning。
 
