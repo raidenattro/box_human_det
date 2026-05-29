@@ -5,12 +5,20 @@ FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
 
 ARG APT_MIRROR=mirrors.aliyun.com
 ARG PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
-ARG FFMPEG_CUDA_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-gpl.tar.xz
+ARG GITHUB_PROXY_BASE=
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG FFMPEG_CUDA_URL=
+ARG FFMPEG_CUDA_ARTIFACT=ffmpeg-n7.1-latest-linux64-gpl.tar.xz
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
+ENV http_proxy=${HTTP_PROXY} \
+    https_proxy=${HTTPS_PROXY} \
+    HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    INFERENCE_BACKEND=mediapipe \
+    INFERENCE_BACKEND=rtmpose_onnx \
     INFERENCE_USE_GPU=1 \
     RTSP_CAPTURE_BACKEND=auto \
     DEBIAN_FRONTEND=noninteractive
@@ -35,16 +43,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && ln -sf /usr/bin/pip3 /usr/local/bin/pip
 
-RUN wget -q -O /tmp/ffmpeg.tar.xz "${FFMPEG_CUDA_URL}" \
-    && mkdir -p /tmp/ffbuild \
-    && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffbuild --strip-components=1 \
-    && install -m755 /tmp/ffbuild/bin/ffmpeg /tmp/ffbuild/bin/ffprobe /usr/local/bin/ \
-    && rm -rf /tmp/ffmpeg.tar.xz /tmp/ffbuild
+RUN set -eu; \
+    DIRECT_FFMPEG="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_CUDA_ARTIFACT}"; \
+    PROXY_FFMPEG=""; \
+    if [ -n "${GITHUB_PROXY_BASE}" ]; then \
+      PROXY_FFMPEG="${GITHUB_PROXY_BASE%/}/${DIRECT_FFMPEG}"; \
+    fi; \
+    ok=0; \
+    for url in ${FFMPEG_CUDA_URL} ${PROXY_FFMPEG} ${DIRECT_FFMPEG}; do \
+      [ -n "${url}" ] || continue; \
+      echo "ffmpeg try=${url}"; \
+      if wget -q --timeout=120 --tries=3 -O /tmp/ffmpeg.tar.xz "${url}"; then ok=1; break; fi; \
+    done; \
+    if [ "${ok}" -eq 1 ]; then \
+      mkdir -p /tmp/ffbuild; \
+      tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffbuild --strip-components=1; \
+      install -m755 /tmp/ffbuild/bin/ffmpeg /tmp/ffbuild/bin/ffprobe /usr/local/bin/; \
+      rm -rf /tmp/ffmpeg.tar.xz /tmp/ffbuild; \
+    else \
+      apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+        && rm -rf /var/lib/apt/lists/*; \
+      echo "warn: 使用 apt ffmpeg（未装上 CUDA 版 BtbN 包）"; \
+    fi
 
 COPY docker/pip-install.sh /tmp/pip-install.sh
 RUN sh /tmp/pip-install.sh "${PIP_INDEX}" --upgrade pip \
     && sh /tmp/pip-install.sh "${PIP_INDEX}" \
-        mediapipe \
+        onnxruntime-gpu \
+        rtmlib \
         opencv-python-headless \
         numpy \
         fastapi \
@@ -56,9 +82,7 @@ RUN sh /tmp/pip-install.sh "${PIP_INDEX}" --upgrade pip \
         "passlib[bcrypt]" \
         "bcrypt<4.1"
 
-ARG MEDIAPIPE_MODEL_URL=https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
-RUN mkdir -p /app/localdata/models \
-    && wget -q -O /app/localdata/models/pose_landmarker_lite.task "${MEDIAPIPE_MODEL_URL}"
+# 模型权重：宿主机 localdata/models/（compose 挂载），构建前 ./scripts/download-model-weights.sh
 
 COPY services ./services
 COPY core ./core

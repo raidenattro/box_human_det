@@ -54,8 +54,8 @@ export async function apiPatch(path, body) {
   return parseJson(resp);
 }
 
-export function thumbnailUrl(cameraId, lastFrameAt) {
-  const t = lastFrameAt ? Math.floor(lastFrameAt) : Date.now();
+export function thumbnailUrl(cameraId, lastFrameAt, cacheBust) {
+  const t = cacheBust ?? (lastFrameAt ? Math.floor(lastFrameAt) : Date.now());
   return `/api/cameras/${encodeURIComponent(cameraId)}/thumbnail?t=${t}`;
 }
 

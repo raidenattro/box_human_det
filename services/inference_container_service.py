@@ -6,22 +6,22 @@ import time
 
 from core.config import load_app_config
 from services.camera_service import normalize_rtsp_url
-from services.inference_backends import (
-    BACKEND_MEDIAPIPE,
-    BACKEND_MMPose,
+from services.inference_backends import resolve_backend_name
+from services.inference_backends.model_registry import (
     BACKEND_RTMPOSE_ONNX,
-    _LITE_BACKENDS,
-    resolve_backend_name,
+    LITE_BACKEND_FAMILIES,
+    resolve_model_preset,
 )
+
+_LITE_BACKENDS = LITE_BACKEND_FAMILIES
 from services.annotation_service import ensure_camera_annotation_file
 from services.runtime_config_service import get_effective_settings
 
 INFERENCE_CONTAINER_PREFIX = os.environ.get("INFERENCE_CONTAINER_PREFIX", "visual-dps-infer-")
-INFERENCE_IMAGE = os.environ.get("INFERENCE_IMAGE", "visual-dps-inference:latest")
-INFERENCE_LITE_IMAGE = os.environ.get("INFERENCE_LITE_IMAGE", "visual-dps-inference-lite:latest")
-INFERENCE_LITE_GPU_IMAGE = os.environ.get(
-    "INFERENCE_LITE_GPU_IMAGE", "visual-dps-inference-lite-gpu:latest"
-)
+INFERENCE_IMAGE = os.environ.get("INFERENCE_IMAGE", "").strip()
+INFERENCE_LITE_IMAGE = os.environ.get("INFERENCE_LITE_IMAGE", "").strip()
+INFERENCE_LITE_GPU_IMAGE = os.environ.get("INFERENCE_LITE_GPU_IMAGE", "").strip()
+INFERENCE_LITE_GPU_ONNX_IMAGE = os.environ.get("INFERENCE_LITE_GPU_ONNX_IMAGE", "").strip()
 HOST_PROJECT_ROOT = os.environ.get("HOST_PROJECT_ROOT", "").strip()
 INFERENCE_JSON_PATH = os.environ.get(
     "INFERENCE_JSON_PATH",
@@ -213,6 +213,8 @@ def _host_bind(rel_path: str, container_subpath: str | None = None, read_only: b
 def _image_exists(client, image: str) -> bool:
     import docker
 
+    if not str(image or "").strip():
+        return False
     try:
         client.images.get(image)
         return True
@@ -220,36 +222,65 @@ def _image_exists(client, image: str) -> bool:
         return False
 
 
-def _resolve_inference_image(client, backend: str) -> tuple[str, str]:
-    """返回 (镜像名, 实际后端)。优先配置项，缺失时回退到 lite 镜像。"""
-    explicit = os.environ.get("INFERENCE_IMAGE", "").strip()
+def _first_local_image(client, repo: str) -> str:
+    """本地已构建镜像任选一 tag（优先非 latest 的 dated tag）。"""
+    import docker
+
+    repo = str(repo or "").strip()
+    if not repo:
+        return ""
+    try:
+        found = client.images.list(name=repo)
+    except docker.errors.DockerException:
+        return ""
+    tags: list[str] = []
+    for img in found:
+        tags.extend(img.tags or [])
+    candidates = [t for t in tags if t.startswith(f"{repo}:")]
+    if not candidates:
+        return ""
+    dated = [t for t in candidates if ":latest" not in t]
+    return sorted(dated or candidates)[-1]
+
+
+def _resolve_inference_image(client, backend_family: str) -> tuple[str, str]:
+    """返回 (镜像名, 后端族)。GPU 优先 lite-gpu-onnx；否则 lite / lite-gpu。"""
+    backend = backend_family
+    use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
+    lite = INFERENCE_LITE_IMAGE or _first_local_image(client, "visual-dps-inference-lite")
+    lite_gpu = INFERENCE_LITE_GPU_IMAGE or _first_local_image(client, "visual-dps-inference-lite-gpu")
+    lite_gpu_onnx = INFERENCE_LITE_GPU_ONNX_IMAGE or _first_local_image(
+        client, "visual-dps-inference-lite-gpu-onnx"
+    )
+
+    if backend in _LITE_BACKENDS and use_gpu:
+        if _image_exists(client, lite_gpu_onnx):
+            return lite_gpu_onnx, backend
+        if _image_exists(client, lite_gpu):
+            return lite_gpu, backend
+
+    explicit = INFERENCE_IMAGE
     if explicit:
         if _image_exists(client, explicit):
-            eff = backend
-            if backend == BACKEND_MMPose and "lite" in explicit.lower():
-                eff = BACKEND_MEDIAPIPE
-            return explicit, eff
-        if _image_exists(client, INFERENCE_LITE_IMAGE):
-            fallback = BACKEND_MEDIAPIPE if backend == BACKEND_MMPose else backend
-            return INFERENCE_LITE_IMAGE, fallback
+            return explicit, backend
+        if _image_exists(client, lite):
+            return lite, backend
         return explicit, backend
 
     if backend in _LITE_BACKENDS:
-        use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
-        if use_gpu and _image_exists(client, INFERENCE_LITE_GPU_IMAGE):
-            return INFERENCE_LITE_GPU_IMAGE, backend
-        if _image_exists(client, INFERENCE_LITE_IMAGE):
-            return INFERENCE_LITE_IMAGE, backend
-        if use_gpu:
-            return INFERENCE_LITE_GPU_IMAGE, backend
-        return INFERENCE_LITE_IMAGE, backend
+        if _image_exists(client, lite):
+            return lite, backend
+        if use_gpu and _image_exists(client, lite_gpu_onnx):
+            return lite_gpu_onnx, backend
+        if use_gpu and _image_exists(client, lite_gpu):
+            return lite_gpu, backend
+        return lite or "visual-dps-inference-lite:unknown", backend
 
-    if _image_exists(client, INFERENCE_IMAGE):
-        return INFERENCE_IMAGE, BACKEND_MMPose
-    if _image_exists(client, INFERENCE_LITE_IMAGE):
-        fallback = BACKEND_MEDIAPIPE if backend == BACKEND_MMPose else backend
-        return INFERENCE_LITE_IMAGE, fallback
-    return INFERENCE_IMAGE, BACKEND_MMPose
+    if _image_exists(client, lite):
+        return lite, BACKEND_RTMPOSE_ONNX
+    if use_gpu and lite_gpu_onnx:
+        return lite_gpu_onnx, BACKEND_RTMPOSE_ONNX
+    return lite or "visual-dps-inference-lite:unknown", BACKEND_RTMPOSE_ONNX
 
 
 def _stream_url_for_container(url: str) -> str:
@@ -293,20 +324,30 @@ def start_inference_container(camera: dict, request=None) -> dict:
         _host_bind("localdata"),
         _host_bind("app_config.json", read_only=True),
     ]
+    config_host = os.path.join(HOST_PROJECT_ROOT, "core", "config.py")
+    if os.path.isfile(config_host):
+        binds.append(_host_bind("core/config.py", read_only=True))
     effective = get_effective_settings(app_config, camera)
-    backend = resolve_backend_name(app_config, overrides=effective)
-    infer_image, backend = _resolve_inference_image(client, backend)
+    preset = resolve_model_preset(app_config, overrides=effective)
+    infer_image, _family = _resolve_inference_image(client, preset.family)
+    use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
+    rtsp_backend = os.environ.get("INFERENCE_RTSP_CAPTURE_BACKEND", "").strip()
+    if not rtsp_backend:
+        # 有 GPU 时用 auto（ffmpeg CUDA）；无 GPU 用 opencv，避免容器内 qsv 假阳性
+        rtsp_backend = "auto" if use_gpu else "opencv"
     env = {
         "INFERENCE_CAMERA_ID": camera_id,
         "INFERENCE_STREAM_URL": _stream_url_for_container(stream_url),
         "INFERENCE_JSON_PATH": f"/app/{json_rel}",
-        "INFERENCE_BACKEND": backend,
+        "INFERENCE_BACKEND": preset.id,
+        "INFERENCE_USE_GPU": "1" if use_gpu else "0",
         "MEDIAMTX_INTERNAL_HOST": os.environ.get("MEDIAMTX_INTERNAL_HOST", "mediamtx"),
         "INFERENCE_FRAME_RATE": str(effective.get("inference.frame_rate", 15)),
         "INFERENCE_HEIGHT": str(effective.get("inference.height", 480)),
         "INFERENCE_POSE_FRAME_INTERVAL": str(effective.get("inference.pose_frame_interval", 3)),
         "INFERENCE_DEBUG_VISUAL": "1" if effective.get("debug-info.enabled") else "0",
-        "RTSP_CAPTURE_BACKEND": os.environ.get("RTSP_CAPTURE_BACKEND", "auto"),
+        "RTSP_CAPTURE_BACKEND": rtsp_backend,
+        "RTSP_FRAME_BUFFER_TTL_SEC": os.environ.get("RTSP_FRAME_BUFFER_TTL_SEC", "1").strip() or "1",
         # 与 event-worker 的 POSE_DELIVERY=stream 对齐（推理 XADD pose:stream）
         "POSE_DELIVERY": os.environ.get("POSE_DELIVERY", "stream").strip() or "stream",
         "POSE_STREAM_KEY": os.environ.get("POSE_STREAM_KEY", "pose:stream"),
@@ -326,7 +367,6 @@ def start_inference_container(camera: dict, request=None) -> dict:
     import docker
 
     device_requests = []
-    use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
     if use_gpu:
         device_requests.append(docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]]))
 
@@ -395,7 +435,7 @@ def start_inference_container(camera: dict, request=None) -> dict:
                 "message": "正在启动",
                 "updated_at": time.time(),
                 "stream_url": stream_url,
-                "backend": backend,
+                "backend": preset.family,
             },
             f,
             ensure_ascii=False,

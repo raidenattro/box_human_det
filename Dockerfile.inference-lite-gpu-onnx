@@ -1,0 +1,32 @@
+# 在已有 lite-gpu 镜像上增量安装 RTMPose ONNX（onnxruntime-gpu）
+# 构建: ./scripts/build-inference-lite-gpu-onnx-image.sh
+
+ARG BASE_IMAGE=visual-dps-inference-lite-gpu:latest
+FROM ${BASE_IMAGE}
+
+ARG PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+
+ENV http_proxy=${HTTP_PROXY} \
+    https_proxy=${HTTPS_PROXY} \
+    HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY}
+
+WORKDIR /app
+
+# 只保留 onnxruntime-gpu（勿与 onnxruntime CPU 包共存）；构建时无 GPU，CUDA EP 在运行时再注册
+RUN python3 -m pip uninstall -y onnxruntime onnxruntime-gpu 2>/dev/null || true \
+    && python3 -m pip install --no-cache-dir -i "${PIP_INDEX}" "onnxruntime-gpu[cuda,cudnn]>=1.17" \
+    && python3 -m pip install --no-cache-dir -i "${PIP_INDEX}" --no-deps rtmlib \
+    && python3 -m pip install --no-cache-dir -i "${PIP_INDEX}" opencv-python-headless numpy \
+    && python3 -m pip install --no-cache-dir -i "${PIP_INDEX}" "ultralytics>=8.3.0" \
+    && python3 -m pip uninstall -y onnxruntime 2>/dev/null || true \
+    && python3 -c "import onnxruntime as ort; print('onnxruntime', ort.__version__, ort.get_available_providers())"
+
+# 模型权重：宿主机 localdata/models/（compose 挂载），构建前 ./scripts/download-model-weights.sh
+
+COPY services ./services
+COPY core ./core
+COPY version.json ./version.json
+COPY inference_worker.py ./inference_worker.py

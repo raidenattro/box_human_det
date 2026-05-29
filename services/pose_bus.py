@@ -115,6 +115,35 @@ def publish_pose_frame(
         return False
 
 
+def list_recent_pose_frames(camera_id: str, *, limit: int = 8) -> list[dict[str, Any]]:
+    """从 pose:stream 取某路最近若干帧（新→旧）。"""
+    cid = str(camera_id or "").strip()
+    if not cid or limit < 1:
+        return []
+    try:
+        client = sync_redis.from_url(redis_url(), decode_responses=True)
+        rows = client.xrevrange(POSE_STREAM_KEY, count=max(limit * 6, 24))
+        client.close()
+    except Exception as exc:
+        logger.warning("Redis list_recent_pose_frames failed camera=%s: %s", cid, exc)
+        return []
+    out: list[dict[str, Any]] = []
+    for _entry_id, fields in rows:
+        raw = (fields or {}).get("payload")
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict) or str(data.get("camera_id") or "") != cid:
+            continue
+        out.append(data)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def get_pose_snapshot(camera_id: str) -> dict[str, Any] | None:
     cid = str(camera_id or "").strip()
     if not cid:

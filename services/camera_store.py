@@ -11,7 +11,6 @@ from services.mediamtx_service import (
     SOURCE_EXTERNAL,
     SOURCE_PUBLISHER,
     SOURCE_RTSP_PULL,
-    SOURCE_V4L2,
     build_playback_url,
     path_from_url,
     sync_mediamtx_config,
@@ -42,7 +41,9 @@ def _normalize_record(raw: dict) -> dict | None:
     if not isinstance(raw, dict):
         return None
 
-    source_type = str(raw.get("source_type") or SOURCE_EXTERNAL).strip()
+    source_type = str(raw.get("source_type") or SOURCE_RTSP_PULL).strip()
+    if source_type == "v4l2":
+        source_type = SOURCE_PUBLISHER
     path = str(raw.get("path") or raw.get("id") or "").strip()
     name = str(raw.get("name") or "").strip()
     url = str(raw.get("url") or "").strip()
@@ -74,10 +75,7 @@ def _normalize_record(raw: dict) -> dict | None:
         "url": url,
         "source_type": source_type,
         "enabled": bool(raw.get("enabled", True)),
-        "device": str(raw.get("device") or "/dev/video0").strip(),
         "pull_url": str(raw.get("pull_url") or "").strip(),
-        "video_size": str(raw.get("video_size") or "640x480").strip(),
-        "framerate": int(raw.get("framerate") or 15),
     }
     if "settings" in raw:
         settings = normalize_camera_settings(raw.get("settings"))
@@ -97,8 +95,7 @@ def _legacy_to_record(item: dict) -> dict | None:
             "name": name,
             "path": path,
             "url": url,
-            "source_type": SOURCE_V4L2 if path == "cam" and "127.0.0.1" in url else SOURCE_EXTERNAL,
-            "device": "/dev/video0",
+            "source_type": SOURCE_PUBLISHER if path and "127.0.0.1" in url else SOURCE_EXTERNAL,
         }
     )
 
@@ -137,16 +134,17 @@ def validate_camera_payload(data: dict, existing_id: str | None = None) -> tuple
     if existing_id:
         path = existing_id
 
-    source_type = str(data.get("source_type") or SOURCE_EXTERNAL).strip()
+    source_type = str(data.get("source_type") or SOURCE_RTSP_PULL).strip()
+    if source_type == "v4l2":
+        return None, "不再支持本地摄像头，请改为「外部推流」或「拉取外部流」"
     name = str(data.get("name") or "").strip()
     url = str(data.get("url") or "").strip()
     pull_url = str(data.get("pull_url") or "").strip()
-    device = str(data.get("device") or "/dev/video0").strip()
 
     if not path:
         return None, "通道编号不能为空"
     if not _PATH_RE.match(path):
-        return None, "通道编号仅支持字母、数字、下划线、中划线（1–64 个字符）"
+        return None, "通道编号仅支持字母、数字、下划线、中划线（1–64 个字符）；若以数字开头（如 71），写入 mediamtx.yml 时会自动加双引号"
     if not name:
         return None, "名称不能为空"
 
@@ -159,11 +157,6 @@ def validate_camera_payload(data: dict, existing_id: str | None = None) -> tuple
     elif source_type == SOURCE_RTSP_PULL:
         if not pull_url:
             return None, "请填写上游视频流地址"
-        if not url:
-            url = build_playback_url(path)
-    elif source_type == SOURCE_V4L2:
-        if not device:
-            return None, "请填写本地摄像头设备路径（如 /dev/video0）"
         if not url:
             url = build_playback_url(path)
     elif source_type == SOURCE_PUBLISHER:
@@ -179,10 +172,7 @@ def validate_camera_payload(data: dict, existing_id: str | None = None) -> tuple
         "url": url,
         "source_type": source_type,
         "enabled": data.get("enabled", True),
-        "device": device,
         "pull_url": pull_url,
-        "video_size": data.get("video_size") or "640x480",
-        "framerate": data.get("framerate") or 15,
     }
     if "settings" in data:
         try:

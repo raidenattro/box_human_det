@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
-# 构建 MediaPipe 轻量推理镜像（本地测试平替，无需 GPU / PyTorch）
+# 构建 MediaPipe / RTMPose ONNX 轻量推理镜像
 set -euo pipefail
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${ROOT}"
+# shellcheck disable=SC1091
+source scripts/lib/docker-build.sh
 
-echo "==> 构建 visual-dps-inference-lite ..."
-docker compose --profile inference-lite build visual-dps-inference-lite
-
-echo ""
-echo "完成。启动 UI 并指定轻量推理镜像："
-echo "  INFERENCE_IMAGE=visual-dps-inference-lite:latest INFERENCE_BACKEND=mediapipe \\"
-echo "    docker compose --profile ui up -d visual-dps-ui"
-echo ""
-echo "或在 app_config.json / 摄像头配置中设置 models.backend 为 mediapipe 或 rtmpose_onnx。"
+visual_dps_compose_build visual-dps-inference-lite visual-dps-inference-lite inference-lite
+echo "示例: INFERENCE_BACKEND=rtmpose_t docker compose up -d visual-dps-ui"

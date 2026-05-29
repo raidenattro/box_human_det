@@ -4,6 +4,7 @@ import { apiDelete, apiGet, apiPatch, apiPost } from '../api/client';
 import LogsPanel from '../components/LogsPanel';
 import ConfirmDialog from '../components/ConfirmDialog';
 import UserDrawer from '../components/UserDrawer';
+import FieldHint from '../components/FieldHint';
 import { CAMERA_OVERRIDE_FIELDS } from '../lib/cameraSettings';
 import { formatUserError } from '../lib/userFacingText';
 import './SettingsPage.css';
@@ -275,7 +276,10 @@ export default function SettingsPage() {
             <div className="settings-form-fields">
               {CAMERA_OVERRIDE_FIELDS.map((field) => (
                 <label key={field.key}>
-                  {field.label}
+                  <span className="settings-field-label">
+                    {field.label}
+                    {field.hint ? <FieldHint text={field.hint} /> : null}
+                  </span>
                   {field.type === 'boolean' ? (
                     <span className="settings-toggle-field">
                       <span className="settings-toggle">
@@ -316,7 +320,6 @@ export default function SettingsPage() {
                       }
                     />
                   )}
-                  {field.hint ? <span className="settings-field-hint">{field.hint}</span> : null}
                 </label>
               ))}
             </div>

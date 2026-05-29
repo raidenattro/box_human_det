@@ -296,6 +296,13 @@
   margin-bottom: 10px;
 }
 
+.drawer-field-hint {
+  margin: -0.35rem 0 0.75rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-muted, #6b7280);
+}
+
 .drawer-section-desc {
   margin: 4px 0 0;
   font-size: 0.72rem;

@@ -55,9 +55,7 @@
 ## 启动
 
 ```bash
-pip install openmim
-mim install "mmengine>=0.10.0" "mmcv>=2.0.0,<2.3.0" "mmdet>=3.0.0,<3.4.0"
-pip install mmpose fastapi "uvicorn[standard]" python-multipart opencv-python-headless numpy psutil
+pip install fastapi "uvicorn[standard]" python-multipart opencv-python-headless numpy psutil redis
 
 python main.py
 ```
@@ -88,19 +86,16 @@ docker compose up -d --build
 
 ## 轻量推理（本地测试平替）
 
-默认使用 **MMDet + MMPose**（`models.backend: mmpose`，镜像 `visual-dps-inference:latest`）。
+默认使用 **RTMPose-T ONNX**（`models.backend: rtmpose_onnx`）；GPU 部署用 `./scripts/build-inference-lite-gpu-onnx-image.sh`（镜像 tag 带日期，见 `AGENTS.md`）。
 
-本地联调可选用 **MediaPipe Pose Lite**（CPU、镜像约数百 MB，无 PyTorch）：
+构建轻量推理镜像后，在 `.env` 中设置脚本输出的 `INFERENCE_LITE_GPU_ONNX_IMAGE`（带日期 tag）。
 
 ```bash
-./scripts/build-inference-lite-image.sh
-
-INFERENCE_IMAGE=visual-dps-inference-lite:latest \
-INFERENCE_BACKEND=mediapipe \
-  docker compose --profile ui up -d visual-dps-ui
+./scripts/build-inference-lite-gpu-onnx-image.sh
+docker compose up -d visual-dps-ui
 ```
 
-或在 `app_config.json` 中设置 `"models": { "backend": "mediapipe", ... }`。  
+`app_config.json` 中 `"models": { "backend": "rtmpose_onnx" }`。  
 碰撞/告警逻辑与默认后端共用（COCO-17 肩/腕关键点），精度低于 RTMPose，仅建议开发验证。
 
 ## 后续计划

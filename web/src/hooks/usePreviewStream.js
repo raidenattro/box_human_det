@@ -23,7 +23,7 @@ async function startWhep(whepUrl, videoEl, pcRef, onIceFailed) {
     const st = pc.iceConnectionState;
     if (st === 'failed' || st === 'disconnected') {
       onIceFailed?.(
-        'WebRTC 媒体连接失败，请确认已映射 UDP 8189（docker compose 中 MEDIAMTX_WEBRTC_UDP_PORT）',
+        'WebRTC 媒体连接失败，请确认已映射 UDP/TCP 8189（MEDIAMTX_WEBRTC_ICE_PORT）且 MEDIAMTX_PUBLIC_HOST 为浏览器访问的 IP',
       );
     }
   };

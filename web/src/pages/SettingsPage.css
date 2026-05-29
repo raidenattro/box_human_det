@@ -64,19 +64,18 @@
 }
 
 .settings-form-fields {
+  --settings-control-height: 37px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px 16px;
   max-width: 720px;
 }
 
-.settings-field-hint {
-  display: block;
-  margin-top: 6px;
-  font-size: 0.78rem;
-  color: #888;
-  line-height: 1.4;
-  font-weight: normal;
+.settings-field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 1.25rem;
 }
 
 .settings-form-fields label {
@@ -91,8 +90,8 @@
 .settings-toggle-field {
   display: flex;
   align-items: center;
-  min-height: 37px;
-  padding: 8px 10px;
+  height: var(--settings-control-height);
+  padding: 0 10px;
   border-radius: 6px;
   border: 1px solid #3a4f5f;
   background: #0f1419;
@@ -162,12 +161,20 @@
 .settings-panel select,
 .settings-filters input,
 .settings-filters select {
-  padding: 8px 10px;
+  box-sizing: border-box;
+  height: var(--settings-control-height, 37px);
+  padding: 0 10px;
   border-radius: 6px;
   border: 1px solid #3a4f5f;
   background: #0f1419;
   color: #eaf2f8;
   font-size: 0.85rem;
+  line-height: 1.2;
+}
+
+.settings-form-fields input[type='number'],
+.settings-form-fields select {
+  height: var(--settings-control-height);
 }
 
 .settings-panel-footer {

@@ -25,6 +25,9 @@ export default function AppNav() {
         <NavLink to="/matrix">
           事件矩阵
         </NavLink>
+        <NavLink to="/topology">
+          服务拓扑
+        </NavLink>
         </div>
       </div>
       {authRequired && user && (

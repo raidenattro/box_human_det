@@ -20,8 +20,9 @@ const DEFAULT_CANVAS_H = 480;
 const INITIAL_STATUS_HTML = [
   '1. 每个货架会自动生成区域四边形，拖动顶点即可调整。',
   '2. 选择网格行列后点击「确认生成」创建货位。',
-  '3. 可选择已保存的摄像头，或新增后抓取一帧进行标注。',
-  '4. 完成后点击「保存标注」。',
+  '3. 点击货位选中；内部拖动平移，橙色角点改形状；选中后侧栏可删除货位。',
+  '4. 可选择已保存的摄像头，或新增后抓取一帧进行标注。',
+  '5. 完成后点击「保存标注」。',
 ].join('<br/>');
 
 /** 默认货架四边形：左上、右上、右下、左下 */
@@ -416,13 +417,19 @@ export function useAnnotateTool(canvasRef, options = {}) {
     const handleR = 5;
     const selRow = selectedCell?.rowIdx;
     const selCol = selectedCell?.colIdx;
+    const drag = dragTargetRef.current;
 
     for (let i = 0; i < extentRows; i++) {
       for (let j = 0; j < extentCols; j++) {
         const poly = getCellPoly(i, j);
         if (!poly || poly.length < 4) continue;
 
-        const isSelected = selRow === i && selCol === j;
+        const isSelected =
+          (selRow === i && selCol === j) ||
+          (drag &&
+            (drag.type === 'cell-body' || drag.type === 'cell-corner') &&
+            drag.row === i &&
+            drag.col === j);
         annCtx.strokeStyle = isSelected ? '#00d4aa' : 'rgba(241, 196, 15, 0.45)';
         annCtx.lineWidth = isSelected ? 2.5 : 1.5;
         if (isSelected) {
@@ -1330,10 +1337,10 @@ export function useAnnotateTool(canvasRef, options = {}) {
   }, [bumpRender]);
 
   const deleteSelectedCell = useCallback(() => {
-    if (!selectedCell) return;
+    if (!selectedCell) return false;
     const { rowIdx, colIdx } = selectedCell;
     const key = getCellKey(rowIdx, colIdx);
-    if (!getCellPoly(rowIdx, colIdx)) return;
+    if (!getCellPoly(rowIdx, colIdx)) return false;
 
     deletedCellsRef.current.add(key);
     cellPolygonsRef.current.delete(key);
@@ -1347,7 +1354,21 @@ export function useAnnotateTool(canvasRef, options = {}) {
     setCanSave(!!mInvRef.current);
     bumpRender();
     if (embedded) void autoSaveRef.current.immediate();
+    return true;
   }, [selectedCell, getCellPoly, renderAnnotator, bumpRender, embedded]);
+
+  const promptDeleteSelectedCell = useCallback(() => {
+    if (!selectedCell) return false;
+    const { rowIdx, colIdx } = selectedCell;
+    if (
+      !window.confirm(
+        `确定删除第 ${rowIdx + 1} 层 · 第 ${colIdx + 1} 列货位？删除后可重新「生成货位」恢复网格。`,
+      )
+    ) {
+      return false;
+    }
+    return deleteSelectedCell();
+  }, [selectedCell, deleteSelectedCell]);
 
   const uploadVideo = useCallback(async () => {
     const file = videoFileRef.current?.files?.[0];
@@ -1919,15 +1940,17 @@ export function useAnnotateTool(canvasRef, options = {}) {
     renderAnnotator();
   }, [renderTick, renderAnnotator, boxIdOverrides, gridRows, gridCols, selectedCell]);
 
-  useLayoutEffect(() => {
-    if (!canvasActive) return undefined;
+  const pointerApiRef = useRef(null);
 
-    const bindPointerHandlers = () => {
-      const annCvs = getCanvas();
-      if (!annCvs) return null;
+  useEffect(() => {
+    if (!canvasActive) {
+      pointerApiRef.current = null;
+      return undefined;
+    }
 
     const onDown = (e) => {
-      if (e.button !== 0) return;
+      const annCvs = getCanvas();
+      if (!annCvs || e.button !== 0) return;
       e.preventDefault();
       const rect = annCvs.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
@@ -1937,22 +1960,65 @@ export function useAnnotateTool(canvasRef, options = {}) {
       const scaleY = bitmapH / rect.height;
       const x = (e.clientX - rect.left) * scaleX;
       const y = (e.clientY - rect.top) * scaleY;
+      // 角点命中约 10 屏幕像素（换算到 bitmap），避免小货位内部被误判为角点
+      const cornerHitBitmap = 10 * Math.max(scaleX, scaleY, 1);
+      const shelfCornerHit = (streamOverlay ? 18 : 12) * Math.max(scaleX, scaleY, 1);
 
       const shelfPoints = shelfPointsRef.current;
-      const hitPx = streamOverlay ? 18 : 12;
-
       if (shelfPoints.length === 4) {
         for (let i = 0; i < shelfPoints.length; i++) {
-          if (getPointDist([x, y], shelfPoints[i]) < hitPx) {
+          if (getPointDist([x, y], shelfPoints[i]) < shelfCornerHit) {
             dragTargetRef.current = { type: 'shelf-corner', i };
+            renderAnnotator();
             return;
           }
         }
       }
 
       const { rows: extentRows, cols: extentCols } = getGridExtent();
+
+      // 点在货位内：默认整体平移，仅贴近顶点时改形状
+      for (let i = extentRows - 1; i >= 0; i--) {
+        for (let j = extentCols - 1; j >= 0; j--) {
+          const poly = getCellPoly(i, j);
+          if (!poly || poly.length < 4 || !pointInPolygon([x, y], poly)) continue;
+
+          let nearestCi = 0;
+          let nearestDist = Infinity;
+          for (let ci = 0; ci < poly.length; ci++) {
+            const d = getPointDist([x, y], poly[ci]);
+            if (d < nearestDist) {
+              nearestDist = d;
+              nearestCi = ci;
+            }
+          }
+
+          if (nearestDist < cornerHitBitmap) {
+            dragTargetRef.current = {
+              type: 'cell-corner',
+              row: i,
+              col: j,
+              ci: nearestCi,
+            };
+          } else {
+            dragTargetRef.current = {
+              type: 'cell-body',
+              row: i,
+              col: j,
+              startX: x,
+              startY: y,
+              startPoly: clonePoly(poly),
+              moved: false,
+            };
+          }
+          renderAnnotator();
+          return;
+        }
+      }
+
+      // 点在货位外：仅当靠近角点时才拉角
       let best = null;
-      let bestDist = hitPx;
+      let bestDist = cornerHitBitmap;
       for (let i = 0; i < extentRows; i++) {
         for (let j = 0; j < extentCols; j++) {
           const poly = getCellPoly(i, j);
@@ -1968,35 +2034,30 @@ export function useAnnotateTool(canvasRef, options = {}) {
       }
       if (best) {
         dragTargetRef.current = best;
+        renderAnnotator();
         return;
-      }
-
-      for (let i = 0; i < extentRows; i++) {
-        for (let j = 0; j < extentCols; j++) {
-          const poly = getCellPoly(i, j);
-          if (!poly || poly.length < 4) continue;
-          if (pointInPolygon([x, y], poly)) {
-            selectCell(i, j);
-            renderAnnotator();
-            return;
-          }
-        }
       }
 
       clearSelectedCell();
       renderAnnotator();
     };
 
-    const onMove = (e) => {
-      if (!dragTargetRef.current) return;
-
+    const clientToCanvas = (clientX, clientY) => {
+      const annCvs = getCanvas();
+      if (!annCvs) return null;
       const rect = annCvs.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
+      if (!rect.width || !rect.height) return null;
       const bitmapW = annCvs.width > 0 ? annCvs.width : coordSpaceRef.current.w || rect.width;
       const bitmapH = annCvs.height > 0 ? annCvs.height : coordSpaceRef.current.h || rect.height;
       const scaleX = bitmapW / rect.width;
       const scaleY = bitmapH / rect.height;
-      const canvasPt = [(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY];
+      return [(clientX - rect.left) * scaleX, (clientY - rect.top) * scaleY];
+    };
+
+    const onMove = (e) => {
+      if (!dragTargetRef.current) return;
+      const canvasPt = clientToCanvas(e.clientX, e.clientY);
+      if (!canvasPt) return;
       const dragTarget = dragTargetRef.current;
 
       if (dragTarget.type === 'shelf-corner') {
@@ -2018,22 +2079,87 @@ export function useAnnotateTool(canvasRef, options = {}) {
         setCanSave(!!mInvRef.current);
         return;
       }
+
+      if (dragTarget.type === 'cell-body') {
+        const dx = canvasPt[0] - dragTarget.startX;
+        const dy = canvasPt[1] - dragTarget.startY;
+        if (!dragTarget.moved) {
+          if (dx * dx + dy * dy < 16) return;
+          dragTarget.moved = true;
+        }
+        const key = getCellKey(dragTarget.row, dragTarget.col);
+        const next = dragTarget.startPoly.map(([px, py]) => [px + dx, py + dy]);
+        cellPolygonsRef.current.set(key, next);
+        renderAnnotator();
+        setCanSave(!!mInvRef.current);
+      }
     };
 
     const onUp = () => {
-      const hadDrag = dragTargetRef.current !== null;
+      const ended = dragTargetRef.current;
+      const hadDrag = ended !== null;
       dragTargetRef.current = null;
+      if (
+        ended &&
+        (ended.type === 'cell-body' || ended.type === 'cell-corner') &&
+        Number.isInteger(ended.row) &&
+        Number.isInteger(ended.col)
+      ) {
+        if (ended.type === 'cell-body' && !ended.moved) {
+          cellPolygonsRef.current.set(
+            getCellKey(ended.row, ended.col),
+            clonePoly(ended.startPoly),
+          );
+        }
+        selectCell(ended.row, ended.col);
+        renderAnnotator();
+      }
       if (hadDrag && embedded) autoSaveRef.current.schedule();
     };
 
-      annCvs.addEventListener('mousedown', onDown);
-      annCvs.addEventListener('mousemove', onMove);
-      annCvs.addEventListener('mouseup', onUp);
+    pointerApiRef.current = { onDown, onMove, onUp };
+    return undefined;
+  }, [
+    canvasActive,
+    getCanvas,
+    getGridExtent,
+    getCellPoly,
+    renderAnnotator,
+    selectCell,
+    clearSelectedCell,
+    refreshPerspectiveFromShelf,
+    embedded,
+    streamOverlay,
+  ]);
+
+  useLayoutEffect(() => {
+    if (!canvasActive) return undefined;
+
+    const bindPointerHandlers = () => {
+      const annCvs = getCanvas();
+      if (!annCvs) return null;
+
+      const onMoveWindow = (e) => pointerApiRef.current?.onMove?.(e);
+      const onUpWindow = () => {
+        pointerApiRef.current?.onUp?.();
+        window.removeEventListener('mousemove', onMoveWindow);
+        window.removeEventListener('mouseup', onUpWindow);
+      };
+
+      const onDownWrapped = (e) => {
+        pointerApiRef.current?.onDown?.(e);
+        if (dragTargetRef.current) {
+          window.addEventListener('mousemove', onMoveWindow);
+          window.addEventListener('mouseup', onUpWindow);
+        }
+      };
+
+      annCvs.addEventListener('mousedown', onDownWrapped);
 
       return () => {
-        annCvs.removeEventListener('mousedown', onDown);
-        annCvs.removeEventListener('mousemove', onMove);
-        annCvs.removeEventListener('mouseup', onUp);
+        annCvs.removeEventListener('mousedown', onDownWrapped);
+        window.removeEventListener('mousemove', onMoveWindow);
+        window.removeEventListener('mouseup', onUpWindow);
       };
     };
 
@@ -2049,17 +2175,7 @@ export function useAnnotateTool(canvasRef, options = {}) {
       if (rafId) cancelAnimationFrame(rafId);
       cleanup?.();
     };
-  }, [
-    canvasActive,
-    getCanvas,
-    getGridExtent,
-    getCellPoly,
-    renderAnnotator,
-    selectCell,
-    clearSelectedCell,
-    refreshPerspectiveFromShelf,
-    embedded,
-  ]);
+  }, [canvasActive, getCanvas]);
 
   const shelfCornersReady = useMemo(() => {
     void renderTick;
@@ -2116,6 +2232,7 @@ export function useAnnotateTool(canvasRef, options = {}) {
     selectCell,
     clearSelectedCell,
     deleteSelectedCell,
+    promptDeleteSelectedCell,
     canSave,
     onBoxIdChange,
     uploadVideo,

@@ -84,15 +84,9 @@ export default function AnnotateControls({ tool, embedded = false }) {
                   type="button"
                   className="monitor-panel-btn monitor-panel-btn-danger"
                   title={`删除第 ${selected.row} 层 · 第 ${selected.col} 列货位`}
-                  onClick={() => {
-                    if (
-                      window.confirm(`确定删除第 ${selected.row} 层 · 第 ${selected.col} 列货位？`)
-                    ) {
-                      tool.deleteSelectedCell();
-                    }
-                  }}
+                  onClick={() => tool.promptDeleteSelectedCell()}
                 >
-                  删除
+                  删除货位
                 </button>
               </div>
               <label className="field annotate-box-id-field">
@@ -110,7 +104,9 @@ export default function AnnotateControls({ tool, embedded = false }) {
           ) : (
             <>
               <span className="group-title">货位编号</span>
-              <p className="annotate-box-empty-hint">点击画面中的货位进行编辑</p>
+              <p className="annotate-box-empty-hint">
+                点击画面中的货位进行编辑；选中后点「删除货位」可移除该 ROI。
+              </p>
             </>
           )}
         </div>

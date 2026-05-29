@@ -125,6 +125,7 @@ docker compose build visual-dps-inference-lite
 | `/` | 摄像头总览 | 看在线状态、抓帧、配置、启停检测 |
 | `/monitor?camera=cam4` | （从卡片进入） | 实时预览、标注、看骨架/碰撞 |
 | `/matrix` | 事件矩阵 | 货架货位状态总览 |
+| `/topology` | 服务拓扑 | 推流 / MediaMTX / 推理 / Redis / event-worker 链路与地址诊断 |
 | `/settings` | 设置 | 全局推理参数、用户、日志 |
 | `/annotate` | （兼容旧入口） | 独立标注页；推荐在监控页「标注」模式完成 |
 

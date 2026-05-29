@@ -38,10 +38,16 @@ def merge_live_frame(pose: dict[str, Any] | None, event: dict[str, Any] | None) 
     """合并姿态与事件为监控页 SSE 载荷。"""
     pose = pose if isinstance(pose, dict) else {}
     event = event if isinstance(event, dict) else {}
-    ts = max(float(pose.get("ts") or 0), float(event.get("ts") or 0)) or time.time()
-    skeletons = event.get("skeletons")
-    if not skeletons:
-        skeletons = pose.get("persons") or pose.get("skeletons") or []
+    pose_ts = float(pose.get("ts") or 0)
+    event_ts = float(event.get("ts") or 0)
+    ts = max(pose_ts, event_ts) or time.time()
+    pose_skeletons = list(pose.get("persons") or pose.get("skeletons") or [])
+    event_skeletons = list(event.get("skeletons") or [])
+    # 骨架坐标以推理姿态为准（最新帧）；event 可能滞后仍保留旧关键点导致「人不跟画」
+    if pose_skeletons and (pose_ts >= event_ts or not event_skeletons):
+        skeletons = pose_skeletons
+    else:
+        skeletons = event_skeletons or pose_skeletons
     return {
         "schema": LIVE_SCHEMA_VERSION,
         "ts": ts,

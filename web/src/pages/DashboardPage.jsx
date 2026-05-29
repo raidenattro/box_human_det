@@ -9,6 +9,7 @@ import {
   formatInferenceMessage,
   formatUserError,
 } from '../lib/userFacingText';
+import { cameraToForm, emptyCameraForm, formToCameraPayload } from '../lib/cameraStreamForm';
 import './DashboardPage.css';
 
 const POLL_MS = 30000;
@@ -20,21 +21,6 @@ const INFER_LABEL = {
   error: '检测异常',
   paused: '检测已暂停',
 };
-
-function rtspUrlFromCamera(cam) {
-  if (cam.source_type === 'rtsp_pull' && cam.pull_url) {
-    return cam.pull_url;
-  }
-  return cam.url || '';
-}
-
-const emptyForm = () => ({
-  path: '',
-  name: '',
-  url: '',
-  enabled: true,
-  settings: {},
-});
 
 export default function DashboardPage() {
   const navigate = useNavigate();
@@ -48,7 +34,7 @@ export default function DashboardPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState('edit');
   const [setupCamera, setSetupCamera] = useState(null);
-  const [form, setForm] = useState(emptyForm());
+  const [form, setForm] = useState(emptyCameraForm());
   const [saving, setSaving] = useState(false);
   const [configHint, setConfigHint] = useState('');
   const [globalSettings, setGlobalSettings] = useState({});
@@ -158,7 +144,7 @@ export default function DashboardPage() {
   const openCreate = () => {
     setDrawerMode('create');
     setSetupCamera(null);
-    setForm(emptyForm());
+    setForm(emptyCameraForm());
     setDrawerOpen(true);
     loadGlobalSettings();
   };
@@ -175,13 +161,7 @@ export default function DashboardPage() {
   const openSetup = async (cam) => {
     setDrawerMode('edit');
     setSetupCamera(cam);
-    setForm({
-      path: cam.path || cam.id,
-      name: cam.name || '',
-      url: rtspUrlFromCamera(cam),
-      enabled: cam.enabled !== false,
-      settings: { ...(cam.settings || {}) },
-    });
+    setForm(cameraToForm(cam));
     setDrawerOpen(true);
     let settings = { ...(cam.settings || {}) };
     let fullCam = cam;
@@ -202,13 +182,7 @@ export default function DashboardPage() {
     } catch {
       await loadGlobalSettings();
     }
-    setForm({
-      path: fullCam.path || fullCam.id,
-      name: fullCam.name || '',
-      url: rtspUrlFromCamera(fullCam),
-      enabled: fullCam.enabled !== false,
-      settings,
-    });
+    setForm({ ...cameraToForm(fullCam), settings });
   };
 
   const closeDrawer = () => {
@@ -234,14 +208,7 @@ export default function DashboardPage() {
   };
 
   const saveFromDrawer = async () => {
-    const payload = {
-      path: form.path,
-      name: form.name,
-      url: form.url.trim(),
-      source_type: setupCamera?.source_type || 'external',
-      enabled: form.enabled,
-      settings: form.settings || {},
-    };
+    const payload = formToCameraPayload(form);
     setSaving(true);
     try {
       const data =
@@ -327,13 +294,14 @@ export default function DashboardPage() {
     setRefreshingId(cam.id);
     try {
       const data = await apiPost(`/api/cameras/${encodeURIComponent(cam.id)}/capture`, {});
-      if (data.status !== 'success') {
-        alert(formatUserError(data.error) || '抓帧失败');
+      if (data?.error || data?.status !== 'success') {
+        alert(formatUserError(data?.error) || '抓帧失败');
         return;
       }
       const patch = {
         has_thumbnail: true,
         last_frame_at: data.last_frame_at ?? Date.now() / 1000,
+        _thumbNonce: Date.now(),
         online: data.online ?? cam.online,
         activity_seconds: data.activity_seconds ?? cam.activity_seconds,
       };
@@ -407,7 +375,10 @@ export default function DashboardPage() {
                   }}
                 >
                   {cam.has_thumbnail ? (
-                    <img src={thumbnailUrl(cam.id, cam.last_frame_at)} alt={cam.name} />
+                    <img
+                      src={thumbnailUrl(cam.id, cam.last_frame_at, cam._thumbNonce)}
+                      alt={cam.name}
+                    />
                   ) : (
                     <div className="card-preview-empty">暂无画面</div>
                   )}

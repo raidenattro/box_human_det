@@ -1,4 +1,4 @@
-"""RTMDet-nano + RTMPose-t（ONNX Runtime，CPU 多路推理）。"""
+"""RTMDet-nano + RTMPose t/s/m（ONNX Runtime）。"""
 
 from __future__ import annotations
 
@@ -8,16 +8,8 @@ import os
 import numpy as np
 
 from services.inference_backends.base import PoseBatch
+from services.inference_backends.model_registry import RTMPOSE_VARIANT_ASSETS
 from services.inference_backends.onnx_assets import ensure_onnx_from_zip
-
-_DEFAULT_DET_ZIP = (
-    "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/"
-    "rtmdet_nano_8xb32-100e_coco-obj365-person-05d8511e.zip"
-)
-_DEFAULT_POSE_ZIP = (
-    "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/"
-    "rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504.zip"
-)
 
 
 def _models_dir(app_config: dict) -> str:
@@ -25,20 +17,46 @@ def _models_dir(app_config: dict) -> str:
     return os.path.join(base, "models", "rtmpose_onnx")
 
 
-def _resolve_model_path(app_config: dict, key: str, default_name: str) -> str:
-    models_cfg = app_config.get("models", {}) if isinstance(app_config.get("models"), dict) else {}
-    raw = str(models_cfg.get(key) or "").strip()
-    if raw:
-        return raw
-    return os.path.join(_models_dir(app_config), default_name, "end2end.onnx")
+def _inference_wants_gpu() -> bool:
+    return os.environ.get("INFERENCE_USE_GPU", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _is_cuda_device(device: str) -> bool:
+    return str(device or "").strip().lower() in ("cuda", "gpu")
+
+
+def _preload_ort_cuda_dlls(device: str) -> None:
+    if not _is_cuda_device(device):
+        return
+    try:
+        import onnxruntime as ort
+
+        if hasattr(ort, "preload_dlls"):
+            try:
+                ort.preload_dlls(cuda=True, cudnn=True)
+            except TypeError:
+                ort.preload_dlls()
+    except Exception as exc:
+        print(f"⚠️ onnxruntime preload_dlls 失败: {exc}")
+
+
+def _resolve_model_path(app_config: dict, subdir: str) -> str:
+    return os.path.join(_models_dir(app_config), subdir, "end2end.onnx")
 
 
 class RTMPoseOnnxBackend:
     name = "rtmpose_onnx"
 
-    def __init__(self, app_config: dict, executor):
+    def __init__(self, app_config: dict, executor, *, variant: str = "t"):
         self.app_config = app_config
         self._executor = executor
+        self._variant = str(variant or "t").lower()
+        if self._variant not in RTMPOSE_VARIANT_ASSETS:
+            self._variant = "t"
         self._det = None
         self._pose = None
 
@@ -49,37 +67,62 @@ class RTMPoseOnnxBackend:
         from rtmlib.tools.object_detection.rtmdet import RTMDet
         from rtmlib.tools.pose_estimation.rtmpose import RTMPose
 
+        assets = RTMPOSE_VARIANT_ASSETS[self._variant]
         models_cfg = self.app_config.get("models", {})
-        det_path = _resolve_model_path(self.app_config, "rtmpose_onnx_det_path", "rtmdet_nano")
-        pose_path = _resolve_model_path(self.app_config, "rtmpose_onnx_pose_path", "rtmpose_t")
-        det_url = str(models_cfg.get("rtmpose_onnx_det_url") or _DEFAULT_DET_ZIP).strip()
-        pose_url = str(models_cfg.get("rtmpose_onnx_pose_url") or _DEFAULT_POSE_ZIP).strip()
+        det_path = _resolve_model_path(self.app_config, str(assets["det_dir"]))
+        pose_path = _resolve_model_path(self.app_config, str(assets["pose_dir"]))
+        det_url = str(assets["det_url"]).strip()
+        pose_url = str(assets["pose_url"]).strip()
 
-        det_size = models_cfg.get("rtmpose_onnx_det_size", [320, 320])
-        pose_size = models_cfg.get("rtmpose_onnx_pose_size", [192, 256])
+        det_size = assets["det_size"]
+        pose_size = assets["pose_size"]
         det_input_size = (int(det_size[0]), int(det_size[1]))
         pose_input_size = (int(pose_size[0]), int(pose_size[1]))
 
-        print("🚀 正在加载 RTMDet-nano + RTMPose-t（ONNX）…")
+        print(
+            f"🚀 正在加载 RTMDet + RTMPose-{self._variant.upper()}（ONNX）…"
+        )
         ensure_onnx_from_zip(det_path, det_url)
         ensure_onnx_from_zip(pose_path, pose_url)
 
         backend = str(models_cfg.get("rtmpose_onnx_ort_backend") or "onnxruntime").strip()
         device = str(models_cfg.get("rtmpose_onnx_device") or "cpu").strip()
+        if _inference_wants_gpu():
+            device = str(models_cfg.get("rtmpose_onnx_device_gpu") or "cuda").strip()
 
-        self._det = RTMDet(
-            onnx_model=det_path,
-            model_input_size=det_input_size,
-            backend=backend,
-            device=device,
+        def _load_models(dev: str) -> None:
+            if _is_cuda_device(dev):
+                _preload_ort_cuda_dlls(dev)
+            self._det = RTMDet(
+                onnx_model=det_path,
+                model_input_size=det_input_size,
+                backend=backend,
+                device=dev,
+            )
+            self._pose = RTMPose(
+                onnx_model=pose_path,
+                model_input_size=pose_input_size,
+                backend=backend,
+                device=dev,
+            )
+
+        try:
+            _load_models(device)
+        except Exception as exc:
+            if not _is_cuda_device(device):
+                raise
+            print(
+                f"⚠️ RTMPose ONNX CUDA 初始化失败（{exc!r}），回退 CPU；"
+                "旧 Pascal GPU（如 GTX 1080）请用 CPU 或换 Turing+ 显卡测 GPU"
+            )
+            device = "cpu"
+            self._det = None
+            self._pose = None
+            _load_models(device)
+
+        print(
+            f"✅ RTMPose-{self._variant.upper()} ONNX 已就绪: det={det_path} pose={pose_path} device={device}"
         )
-        self._pose = RTMPose(
-            onnx_model=pose_path,
-            model_input_size=pose_input_size,
-            backend=backend,
-            device=device,
-        )
-        print(f"✅ RTMPose-t ONNX 已就绪: det={det_path} pose={pose_path} device={device}")
 
     def _detect_sync(self, frame) -> np.ndarray:
         boxes = self._det(frame)
