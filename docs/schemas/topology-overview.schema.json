@@ -192,6 +192,9 @@
           "properties": {
             "requested": { "type": "boolean" },
             "available": { "type": "boolean" },
+            "mode": { "type": "string", "enum": ["gpu", "cpu", "unknown"] },
+            "detail": { "type": "string" },
+            "label": { "type": "string" },
             "warning": { "type": "string" }
           }
         },

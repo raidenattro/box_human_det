@@ -190,9 +190,12 @@
   "hostname": "338975da9981",
   "ip": "172.18.0.12",
   "gpu": {
-    "requested": false,
-    "available": false,
-    "warning": "NVIDIA Driver was not detected"
+    "requested": true,
+    "available": true,
+    "mode": "gpu",
+    "detail": "cuda",
+    "label": "GPU (cuda)",
+    "warning": ""
   },
   "pose_publish": {
     "delivery": "stream",

@@ -203,9 +203,13 @@ def _mediamtx_paths_map() -> tuple[dict[str, dict], bool, str]:
 
 
 def _infer_gpu_meta(container, infer_status: dict) -> dict:
+    """从容器 env、DeviceRequests 与 infer 日志推断实际算力（GPU/CPU）。"""
     requested = os.environ.get("INFERENCE_USE_GPU", "").strip() in ("1", "true", "yes")
     warning = ""
-    available = False
+    mode = "unknown"  # gpu | cpu | unknown
+    detail = ""
+    has_gpu_request = False
+
     if container is not None:
         try:
             env_list = container.attrs.get("Config", {}).get("Env") or []
@@ -213,16 +217,67 @@ def _infer_gpu_meta(container, infer_status: dict) -> dict:
                 if item.startswith("INFERENCE_USE_GPU="):
                     requested = item.split("=", 1)[1].strip() in ("1", "true", "yes")
                     break
-            tail = container.logs(tail=40).decode("utf-8", errors="replace")
+            host_cfg = container.attrs.get("HostConfig") or {}
+            has_gpu_request = bool(host_cfg.get("DeviceRequests"))
+            tail = container.logs(tail=160).decode("utf-8", errors="replace")
+
             if "NVIDIA Driver was not detected" in tail:
-                warning = "NVIDIA Driver was not detected"
+                warning = "容器内未检测到 NVIDIA 驱动"
+                mode = "cpu"
             elif "CUDA failure" in tail or "CUDA driver" in tail:
-                warning = "CUDA unavailable in container"
-            elif requested and infer_status.get("status") == "running":
-                available = True
+                warning = "CUDA 不可用"
+                mode = "cpu"
+
+            for line in reversed(tail.splitlines()):
+                line = line.strip()
+                if "已就绪" not in line and "YOLO26" not in line and "RTMPose" not in line:
+                    continue
+                m = re.search(r"device=(cuda|cpu|\d+)", line, re.I)
+                if not m:
+                    continue
+                dev = m.group(1).lower()
+                if dev == "cuda":
+                    mode, detail = "gpu", "cuda"
+                elif dev == "cpu":
+                    mode, detail = "cpu", "cpu"
+                elif dev.isdigit():
+                    mode, detail = "gpu", f"cuda:{dev}"
+                break
+
+            if mode == "unknown":
+                if re.search(r"回退\s*CPU|Falling back to CPU", tail, re.I):
+                    mode, detail = "cpu", "cpu"
+                    warning = warning or "运行时已回退 CPU"
+                elif "SUBLIBRARY_VERSION_MISMATCH" in tail or "CUDNN_STATUS" in tail:
+                    mode, detail = "cpu", "cpu"
+                    warning = warning or "cuDNN/CUDA 不匹配"
+
+            if mode == "unknown" and requested and has_gpu_request:
+                if infer_status.get("status") == "running" and not warning:
+                    warning = "已分配 GPU，日志未出现 device= 行"
         except Exception:
             pass
-    return {"requested": requested, "available": available, "warning": warning}
+
+    available = mode == "gpu"
+    if mode == "gpu":
+        label = f"GPU ({detail})" if detail else "GPU"
+    elif mode == "cpu":
+        label = "CPU（已请求 GPU）" if requested else "CPU"
+    elif requested:
+        label = "GPU 已配置（待确认）"
+    else:
+        label = "CPU（未开 GPU）"
+    if warning:
+        label = f"{label} — {warning}"
+
+    return {
+        "requested": requested,
+        "available": available,
+        "mode": mode,
+        "detail": detail,
+        "label": label,
+        "warning": warning,
+    }
 
 
 def _node(

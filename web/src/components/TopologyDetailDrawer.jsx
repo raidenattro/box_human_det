@@ -120,6 +120,7 @@ export default function TopologyDetailDrawer({
                     ['MTX 入站', mtx.bytes_received],
                     ['推理状态', inf.status],
                     ['后端', inf.backend],
+                    ['算力', inf.gpu?.label ?? (inf.gpu?.requested ? 'GPU 已请求' : '—')],
                     ['容器', inf.container_name],
                     ['容器 IP', inf.ip],
                   ]}
