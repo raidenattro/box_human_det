@@ -336,10 +336,16 @@ def open_rtsp_capture(url: str, buffer_size: int = 1):
     if mode == "ffmpeg":
         cap = _FfmpegRtspCapture(url)
         if cap.open():
-            print(f"ℹ️ RTSP 采帧: ffmpeg 后台最新帧 ({probe_summary()})")
-            return cap
-        cap.release()
-        print("⚠️ FFmpeg RTSP 打开失败，回退 OpenCV")
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                print(f"ℹ️ RTSP 采帧: ffmpeg 后台最新帧 ({probe_summary()})")
+                return cap
+            cap.release()
+            print(
+                "⚠️ FFmpeg 采帧无首帧（常见：缺 libnvcuvid 导致 NVDEC 失败），回退 OpenCV"
+            )
+        else:
+            print("⚠️ FFmpeg RTSP 打开失败，回退 OpenCV")
 
     cap = _OpencvRtspCapture(url, buffer_size=buffer_size)
     if cap.open():

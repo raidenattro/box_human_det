@@ -14,3 +14,6 @@ if ! docker image inspect "${BASE_REPO}:latest" >/dev/null 2>&1; then
 fi
 
 visual_dps_compose_build visual-dps-inference-lite-gpu-onnx visual-dps-inference-lite-gpu-onnx inference-lite
+
+ref="$(visual_dps_tag_image visual-dps-inference-lite-gpu-onnx "${VISUAL_DPS_IMAGE_TAG}")"
+echo "建议校验: ./scripts/verify-gpu-onnx-image.sh ${ref}"

@@ -16,11 +16,11 @@ services:
     volumes:
       - ./localdata/mediamtx.yml:/mediamtx.yml:ro
     ports:
-      - "${MEDIAMTX_RTSP_PORT:-8554}:8554"
-      - "${MEDIAMTX_HLS_PORT:-8888}:8888"
-      - "${MEDIAMTX_WEBRTC_PORT:-8889}:8889"
-      - "${MEDIAMTX_WEBRTC_ICE_PORT:-8189}:8189/udp"
-      - "${MEDIAMTX_WEBRTC_ICE_PORT:-8189}:8189/tcp"
+      - "${MEDIAMTX_RTSP_PORT:-8554}:${MEDIAMTX_RTSP_PORT:-8554}"
+      - "${MEDIAMTX_HLS_PORT:-8888}:${MEDIAMTX_HLS_PORT:-8888}"
+      - "${MEDIAMTX_WEBRTC_PORT:-8889}:${MEDIAMTX_WEBRTC_PORT:-8889}"
+      - "${MEDIAMTX_WEBRTC_ICE_PORT:-8189}:${MEDIAMTX_WEBRTC_ICE_PORT:-8189}/udp"
+      - "${MEDIAMTX_WEBRTC_ICE_PORT:-8189}:${MEDIAMTX_WEBRTC_ICE_PORT:-8189}/tcp"
     networks:
       - visual-dps-internal
     restart: unless-stopped
@@ -40,7 +40,7 @@ services:
       - no_proxy=localhost,127.0.0.1,::1,mediamtx,redis,visual-dps-ui,visual-dps-event-worker,172.16.0.0/12,172.17.0.0/16,172.18.0.0/16,10.0.0.0/8
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-      - DOCKER_NETWORK=visual-dps-internal
+      - DOCKER_NETWORK=${DOCKER_NETWORK:-visual-dps-internal}
       - JSON_DIR=/app/localdata/json
       - LAST_FRAME=/app/localdata/last_frame.jpg
       - CAMERA_IPS_FILE=/app/localdata/camera_ips.json
@@ -55,16 +55,19 @@ services:
       - MEDIAMTX_PUBLIC_HOST=${MEDIAMTX_PUBLIC_HOST:-127.0.0.1}
       - MEDIAMTX_HLS_PORT=${MEDIAMTX_HLS_PORT:-8888}
       - MEDIAMTX_WEBRTC_PORT=${MEDIAMTX_WEBRTC_PORT:-8889}
-      - MEDIAMTX_HLS_BASE=http://mediamtx:8888
-      - MEDIAMTX_WEBRTC_BASE=http://mediamtx:8889
+      - MEDIAMTX_WEBRTC_ICE_PORT=${MEDIAMTX_WEBRTC_ICE_PORT:-8189}
+      - MEDIAMTX_HLS_BASE=http://mediamtx:${MEDIAMTX_HLS_PORT:-8888}
+      - MEDIAMTX_WEBRTC_BASE=http://mediamtx:${MEDIAMTX_WEBRTC_PORT:-8889}
       - RTSP_CAPTURE_BACKEND=opencv
       - HOST_PROJECT_ROOT=${PWD}
       - INFERENCE_IMAGE=${INFERENCE_IMAGE:-}
-      - INFERENCE_LITE_IMAGE=${INFERENCE_LITE_IMAGE:-visual-dps-inference-lite:latest}
-      - INFERENCE_LITE_GPU_IMAGE=${INFERENCE_LITE_GPU_IMAGE:-visual-dps-inference-lite-gpu:latest}
-      - INFERENCE_LITE_GPU_ONNX_IMAGE=${INFERENCE_LITE_GPU_ONNX_IMAGE:-visual-dps-inference-lite-gpu-onnx:latest}
+      - INFERENCE_LITE_IMAGE=${INFERENCE_LITE_IMAGE:-visual-dps-inference-lite:${VISUAL_DPS_IMAGE_TAG:-latest}}
+      - INFERENCE_LITE_GPU_IMAGE=${INFERENCE_LITE_GPU_IMAGE:-visual-dps-inference-lite-gpu:${VISUAL_DPS_IMAGE_TAG:-latest}}
+      - INFERENCE_LITE_GPU_ONNX_IMAGE=${INFERENCE_LITE_GPU_ONNX_IMAGE:-visual-dps-inference-lite-gpu-onnx:${VISUAL_DPS_IMAGE_TAG:-latest}}
+      - INFERENCE_CONTAINER_PREFIX=${INFERENCE_CONTAINER_PREFIX:-visual-dps-infer-}
       - INFERENCE_USE_GPU=${INFERENCE_USE_GPU:-0}
       - INFERENCE_BACKEND=${INFERENCE_BACKEND:-rtmpose_t}
+      - INFERENCE_CONTAINER_PREFIX=${INFERENCE_CONTAINER_PREFIX:-visual-dps-infer-}
       - VISUAL_DPS_VERSION_FILE=/app/version.json
       - VISUAL_DPS_IMAGE_TAG=${VISUAL_DPS_IMAGE_TAG:-latest}
       - VISUAL_DPS_UI_IMAGE=visual-dps-visual-dps-ui:${VISUAL_DPS_IMAGE_TAG:-latest}

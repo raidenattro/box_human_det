@@ -29,6 +29,33 @@ INFERENCE_JSON_PATH = os.environ.get(
 )
 INFERENCE_STATUS_DIR = os.environ.get("INFERENCE_STATUS_DIR", "localdata/inference")
 
+# infer 镜像内 pip nvidia 库路径（UI 容器未必安装，用固定路径 + fallback）
+_INFER_NVIDIA_LIB_GLOB = "/usr/local/lib/python3.10/dist-packages/nvidia/*/lib"
+_INFER_NVIDIA_LIB_FALLBACK = (
+    "cudnn",
+    "cublas",
+    "cuda_runtime",
+    "cuda_nvrtc",
+    "cufft",
+    "curand",
+    "cusolver",
+    "cusparse",
+    "nccl",
+    "nvtx",
+    "cuda_cupti",
+)
+
+
+def _infer_gpu_ld_library_path() -> str:
+    import glob
+
+    parts = sorted(glob.glob(_INFER_NVIDIA_LIB_GLOB))
+    if not parts:
+        base = "/usr/local/lib/python3.10/dist-packages/nvidia"
+        parts = [os.path.join(base, sub, "lib") for sub in _INFER_NVIDIA_LIB_FALLBACK]
+    parts.extend(["/usr/local/nvidia/lib", "/usr/local/nvidia/lib64"])
+    return ":".join(parts)
+
 
 def resolve_inference_json_rel(camera_id: str, json_dir: str = "localdata/json") -> str:
     default = INFERENCE_JSON_PATH
@@ -324,16 +351,24 @@ def start_inference_container(camera: dict, request=None) -> dict:
         _host_bind("localdata"),
         _host_bind("app_config.json", read_only=True),
     ]
-    config_host = os.path.join(HOST_PROJECT_ROOT, "core", "config.py")
-    if os.path.isfile(config_host):
+    # 须在宿主机挂载（UI 在容器内时 isfile(HOST_PROJECT_ROOT/...) 恒为 False）
+    if HOST_PROJECT_ROOT:
         binds.append(_host_bind("core/config.py", read_only=True))
+        for rel in (
+            "inference_worker.py",
+            "services/hwaccel_probe.py",
+            "services/nvidia_pip_cuda.py",
+            "services/rtsp_capture.py",
+            "services/inference_backends/rtmpose_onnx_backend.py",
+        ):
+            binds.append(_host_bind(rel, read_only=True))
     effective = get_effective_settings(app_config, camera)
     preset = resolve_model_preset(app_config, overrides=effective)
     infer_image, _family = _resolve_inference_image(client, preset.family)
     use_gpu = os.environ.get("INFERENCE_USE_GPU", "0") == "1"
     rtsp_backend = os.environ.get("INFERENCE_RTSP_CAPTURE_BACKEND", "").strip()
     if not rtsp_backend:
-        # 有 GPU 时用 auto（ffmpeg CUDA）；无 GPU 用 opencv，避免容器内 qsv 假阳性
+        # auto：有 NVDEC（libnvcuvid）时用 ffmpeg CUDA，否则探测回退 opencv
         rtsp_backend = "auto" if use_gpu else "opencv"
     env = {
         "INFERENCE_CAMERA_ID": camera_id,
@@ -354,6 +389,9 @@ def start_inference_container(camera: dict, request=None) -> dict:
         "POSE_STREAM_GROUP": os.environ.get("POSE_STREAM_GROUP", "event-workers"),
         "POSE_STREAM_MAXLEN": os.environ.get("POSE_STREAM_MAXLEN", "2000"),
     }
+    if use_gpu:
+        env["LD_LIBRARY_PATH"] = _infer_gpu_ld_library_path()
+
     redis_url = os.environ.get("REDIS_URL", "").strip()
     if redis_url:
         env["REDIS_URL"] = redis_url
@@ -435,7 +473,7 @@ def start_inference_container(camera: dict, request=None) -> dict:
                 "message": "正在启动",
                 "updated_at": time.time(),
                 "stream_url": stream_url,
-                "backend": preset.family,
+                "backend": preset.id,
             },
             f,
             ensure_ascii=False,

@@ -32,16 +32,31 @@ export const CAMERA_OVERRIDE_FIELDS = [
   },
 ];
 
-const LEGACY_BACKEND_LABELS = {
-  rtmpose_onnx: 'RTMPose-T（旧 ID）',
+/** 旧配置 / 族 id → 当前 preset id（与 model_registry._ALIASES 对齐） */
+const BACKEND_ALIASES = {
+  lite: 'rtmpose_t',
+  mp: 'rtmpose_t',
+  mediapipe: 'rtmpose_t',
+  mmpose: 'rtmpose_t',
+  mm: 'rtmpose_t',
+  default: 'rtmpose_t',
+  rtmpose_onnx: 'rtmpose_t',
+  'rtmpose-t': 'rtmpose_t',
+  yolo_pose: 'yolo26s_pose',
 };
+
+export function normalizeBackendId(value) {
+  const v = String(value || '').trim().toLowerCase();
+  return BACKEND_ALIASES[v] || v;
+}
 
 export function formatSettingDisplayValue(field, value) {
   if (value === undefined || value === null || value === '') return '—';
   if (field.type === 'boolean') return value ? '开' : '关';
   if (field.type === 'select' && field.options) {
-    const opt = field.options.find((o) => o.value === value);
-    return opt?.shortLabel || opt?.label || LEGACY_BACKEND_LABELS[value] || String(value);
+    const normalized = normalizeBackendId(value);
+    const opt = field.options.find((o) => o.value === normalized);
+    return opt?.shortLabel || opt?.label || String(value);
   }
   return String(value);
 }

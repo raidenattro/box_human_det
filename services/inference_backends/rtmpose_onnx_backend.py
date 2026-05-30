@@ -33,6 +33,9 @@ def _preload_ort_cuda_dlls(device: str) -> None:
     if not _is_cuda_device(device):
         return
     try:
+        from services.nvidia_pip_cuda import preload_cudnn_libs
+
+        preload_cudnn_libs()
         import onnxruntime as ort
 
         if hasattr(ort, "preload_dlls"):
@@ -41,7 +44,17 @@ def _preload_ort_cuda_dlls(device: str) -> None:
             except TypeError:
                 ort.preload_dlls()
     except Exception as exc:
-        print(f"⚠️ onnxruntime preload_dlls 失败: {exc}")
+        print(f"⚠️ onnxruntime CUDA 库预加载失败: {exc}")
+
+
+def _ort_active_provider(onnx_path: str) -> str:
+    import onnxruntime as ort
+
+    sess = ort.InferenceSession(
+        onnx_path,
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    return sess.get_providers()[0]
 
 
 def _resolve_model_path(app_config: dict, subdir: str) -> str:
@@ -108,6 +121,16 @@ class RTMPoseOnnxBackend:
 
         try:
             _load_models(device)
+            if _is_cuda_device(device):
+                active = _ort_active_provider(det_path)
+                if active != "CUDAExecutionProvider":
+                    print(
+                        f"⚠️ ORT 实际 EP={active}（期望 CUDAExecutionProvider），回退 CPU"
+                    )
+                    device = "cpu"
+                    self._det = None
+                    self._pose = None
+                    _load_models(device)
         except Exception as exc:
             if not _is_cuda_device(device):
                 raise

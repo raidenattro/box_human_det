@@ -11,6 +11,13 @@
   - `VISUAL_DPS_IMAGE_TAG=20260528-143052-5eae119`（`visual-dps-ui` / `visual-dps-event-worker` 共用，由 `build-ui-image.sh` 写入 `.env`）
 - 若需额外保留 `latest`：`DOCKER_TAG_ALSO_LATEST=1 ./scripts/build-inference-lite-gpu-onnx-image.sh`（UI/Event 构建脚本同样支持）
 
+## 构建 `inference-lite-gpu-onnx`（必须读）
+
+- 细则：**[docs/BUILD-inference-gpu-onnx.md](docs/BUILD-inference-gpu-onnx.md)**（锁栈、镜像探测、禁止项、153 同步）。
+- 命令：`./scripts/build-inference-lite-gpu-image.sh` → `./scripts/build-inference-lite-gpu-onnx-image.sh` → `./scripts/verify-gpu-onnx-image.sh <tag>`。
+- 改 `TORCH_INDEX` 前：`./scripts/probe-torch-mirror.sh`。
+- `.env`：`PIP_INDEX`（清华）、`TORCH_INDEX`（默认交大 cu121）、`GITHUB_PROXY_BASE`；**docker build 内 unset 代理**。
+
 ## 推理后端
 
 - 已移除 OpenMMLab **mmpose** 运行时依赖。
@@ -33,6 +40,14 @@ docker cp web/dist/. visual-dps-ui:/app/web/dist/
 ```
 
 改 Dockerfile/依赖时用 `./scripts/build-ui-image.sh`（或 `--up`）。细则见 `.cursor/rules/build-deploy-after-change.mdc`。
+
+## 全量离线部署（新机 / 整栈恢复）
+
+- **唯一入口**：`./scripts/export-offline-one-shot.sh`
+- **清单**：`docs/OFFLINE-DEPLOY-CHECKLIST.md`
+- 分发：`rsync -av dist/visual-dps-offline-complete-*/ hqit@192.168.1.153:~/workspace/...`
+- 目标机：包内 `./verify-package.sh` → 改 `app/.env` → `./install.sh --host <IP> --stop-infer`
+- 勿对 `bundle.tar` 再 gzip；默认 rsync 目录，勿 `tar -czf` 整包
 
 ## 153 异地机（固定）
 

@@ -92,6 +92,22 @@ else
   rm -f "${PKG_ROOT}/docker-images/bundle.tar.assembled"
 fi
 
+# GPU 推理包：load 后校验 gpu-onnx 栈（避免旧层 / digest 差异导致 CPU 回退或 Pose26 失败）
+set -a
+# shellcheck disable=SC1090
+source "${APP_DIR}/.env" 2>/dev/null || true
+set +a
+if [[ "${INFERENCE_USE_GPU:-0}" == "1" && -n "${INFERENCE_LITE_GPU_ONNX_IMAGE:-}" ]]; then
+  VSCRIPT="${APP_DIR}/deploy/verify-gpu-onnx-content.sh"
+  if [[ -x "${VSCRIPT}" ]]; then
+    echo "==> 校验已加载的 gpu-onnx: ${INFERENCE_LITE_GPU_ONNX_IMAGE}"
+    VERIFY_GPU_SKIP="${VERIFY_GPU_SKIP:-0}" "${VSCRIPT}" "${INFERENCE_LITE_GPU_ONNX_IMAGE}" || {
+      echo "错误: gpu-onnx 镜像未通过校验，请检查 bundle 是否与源机构建 tag 一致" >&2
+      exit 1
+    }
+  fi
+fi
+
 install_weights() {
   local src="$1"
   local dest="${APP_DIR}/localdata/models"
@@ -132,6 +148,13 @@ if [[ -n "${WEIGHTS_DIR}" && -d "${WEIGHTS_DIR}" ]]; then
   fi
 else
   echo "警告: 未找到 weights/，且 app 内无 models（推理将不可用）" >&2
+fi
+
+REGEN_SCRIPT="${APP_DIR}/deploy/regenerate-mediamtx-config.sh"
+if [[ -x "${REGEN_SCRIPT}" ]]; then
+  "${REGEN_SCRIPT}" "${APP_DIR}"
+else
+  echo "警告: 未找到 ${REGEN_SCRIPT}，跳过 mediamtx.yml 生成（请在 UI 中「应用 MediaMTX 配置」）" >&2
 fi
 
 echo "==> 停止旧 compose 栈..."

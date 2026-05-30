@@ -1,13 +1,14 @@
 ---
 name: visual-dps-offline-package
 description: >-
-  Build and install Visual-DPS offline deployment packages: export-offline-package.sh,
-  export-offline-complete.sh, download-model-weights.sh, install.sh, verify-package.sh.
-  Use when the user mentions 离线包、离线部署、export-offline、docker save、weights、
-  bundle.tar、全量包、install.sh、或目标机无网恢复 Visual-DPS。
+  Full offline deploy only: export-offline-one-shot.sh, install.sh, verify-package.sh.
+  Use when the user mentions 离线包、全量离线、新机部署、整栈恢复、export-offline、
+  install.sh、bundle.tar、或目标机无网恢复 Visual-DPS。
 ---
 
-# Visual-DPS 离线打包与安装
+# Visual-DPS 全量离线打包与安装
+
+仅支持 **新机 / 整栈恢复**（7 镜像 + weights）。入口：`./scripts/export-offline-one-shot.sh`。
 
 ## 包布局（v2，默认）
 
@@ -25,18 +26,19 @@ description: >-
 ```bash
 cd <repo-root>
 
-# 1. 权重（只需在源机做一次，或更新模型时重做）
+# 一把过（权重 → 构建全部镜像 → 校验 gpu-onnx → 预检 → 打全量包）
+./scripts/export-offline-one-shot.sh
+
+# 或分步：
 ./scripts/download-model-weights.sh
-
-# 2. 确保本地已有全部镜像（按需 build）
 ./scripts/build-ui-image.sh
-./scripts/build-inference-lite-image.sh
-./scripts/build-inference-lite-gpu-image.sh
 ./scripts/build-inference-lite-gpu-onnx-image.sh
-
-# 3. 打包容器（默认 dist/ 下目录，几分钟级）
+./scripts/verify-gpu-onnx-image.sh visual-dps-inference-lite-gpu-onnx:<tag>
+./scripts/preflight-offline-export.sh --inference all
 ./scripts/export-offline-complete.sh
 ```
+
+详见 `docs/OFFLINE-DEPLOY-CHECKLIST.md`。
 
 输出：`dist/visual-dps-offline-complete-<YYYYMMDD-HHMMSS>/`
 
@@ -54,16 +56,6 @@ cd <repo-root>
 | `FORCE_SAVE=1` | 忽略已有 `bundle.tar`，强制重做 `docker save` |
 | `-o dist/my-pkg` | 指定输出目录 |
 
-### 非全量示例
-
-```bash
-# 仅 Web + 事件（无推理镜像）
-./scripts/export-offline-package.sh --inference base --no-models
-
-# 仅 GPU-ONNX 推理 + 权重
-./scripts/export-offline-package.sh --inference gpu-onnx
-```
-
 ## 目标机：安装
 
 ```bash
@@ -79,16 +71,17 @@ cd <包根目录>
 | `--weights-dir DIR` | 默认 `<包根>/weights`；旧包可用 `app/localdata/models` |
 | `--stop-infer` | 删除旧 `visual-dps-infer-*` 容器 |
 
+`install.sh` 在 `compose up` 前按 `.env` 生成 `app/localdata/mediamtx.yml`（不打包源机 yaml）。改 WebRTC/HLS 后：`app/deploy/regenerate-mediamtx-config.sh` 或 UI「应用 MediaMTX 配置」。
+
 访问：`http://<MEDIAMTX_PUBLIC_HOST>:<UI_PORT>/`（默认 8045）
 
 ## 分发方式
 
 | 场景 | 做法 |
 |------|------|
-| 内网 / U 盘 / rsync | 直接拷贝**目录**，或 `--archive tar` |
-| 带宽有限 | `--archive tar.gz --compress pigz` 或 `zstd` |
-| 仅更新权重 | 单独同步 `weights/`（~276M），不必重打 bundle |
-
+| 内网 / rsync（**推荐**） | 直接同步**目录**，勿默认 `--archive --split`（多打一遍 tar 浪费时间） |
+| U 盘单文件 ≤4G | 才用 `--archive tar --split 2G` |
+| 带宽极有限 | `--archive tar.gz --compress pigz` |
 ```bash
 # 153 测试机固定账号（勿用 xu@ / sugar@）
 rsync -av --progress dist/visual-dps-offline-complete-*/ hqit@192.168.1.153:~/workspace/visual-dps-0529/
@@ -111,14 +104,19 @@ visual_dps_check_model_weights ./localdata
 | 缺镜像 | 按 inference 模式 build 对应 Dockerfile 脚本 |
 | complete 缺 lite 镜像 | 勿用 `.env` 的 `INFERENCE_LITE_IMAGE` 代替 lite；`all` 模式已固定收集三档 |
 | install 报 REDIS_PASSWORD | 编辑 `app/.env` |
+| WebRTC/HLS 不可用 | 确认 `camera_ips.json` 中 RTSP 端口与 `MEDIAMTX_RTSP_PORT` 一致；运行 `regenerate-mediamtx-config.sh` |
 | 204 仅 docker-compose v1 | `install.sh` 已优先 `docker-compose.deploy.yml` |
+| cam2 Pose26 / 推理 CPU | 源机重建 gpu-onnx 后重打全量包；见 `docs/BUILD-inference-gpu-onnx.md` |
 
 ## 相关文件
 
-- `scripts/export-offline-package.sh` — 主入口
-- `scripts/export-offline-complete.sh` — `--inference all` 快捷方式
+- `scripts/export-offline-one-shot.sh` — 源机一把过（推荐）
+- `scripts/preflight-offline-export.sh` — 打包前预检
+- `scripts/export-offline-package.sh` — 主入口（内嵌预检，`SKIP_PREFLIGHT=1` 可跳过）
+- `scripts/export-offline-complete.sh` — 镜像已齐时仅重打离线包
+- `deploy/verify-gpu-onnx-content.sh` — gpu-onnx 栈校验（构建/打包/install）
 - `scripts/download-model-weights.sh` — 源机权重
-- `deploy/install.sh`、`deploy/verify-package.sh`
+- `deploy/install.sh`、`deploy/verify-package.sh`、`deploy/regenerate-mediamtx-config.sh`
 - `deploy/model-weights-spec.sh`、`deploy/check-model-weights.sh`
 - `deploy/PACKAGE-MANIFEST.md`、`deploy/OFFLINE-QUICKSTART.md`
 

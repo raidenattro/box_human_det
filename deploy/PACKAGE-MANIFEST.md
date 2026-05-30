@@ -21,7 +21,7 @@
 | `visual-dps-event-worker` | `latest` | 同上（与 UI 同次 build） | **常驻** 碰撞/告警 |
 | `visual-dps-inference-lite` | `YYYYMMDD-HHMMSS-<git>` 或 `latest` | `./scripts/build-inference-lite-image.sh` | **按需** 推理（CPU） |
 | `visual-dps-inference-lite-gpu` | 同上 | `./scripts/build-inference-lite-gpu-image.sh` | **按需** 推理（GPU 基底） |
-| `visual-dps-inference-lite-gpu-onnx` | 同上 | `./scripts/build-inference-lite-gpu-onnx-image.sh`（需先有 lite-gpu） | **按需** 推理（GPU + ONNX，推荐） |
+| `visual-dps-inference-lite-gpu-onnx` | 同上 | `./scripts/build-inference-lite-gpu-onnx-image.sh`（需先有 lite-gpu；见 `docs/BUILD-inference-gpu-onnx.md`） | **按需** 推理（GPU + ONNX，推荐） |
 
 说明：
 
@@ -140,7 +140,7 @@ visual-dps-package/
 | `.env` | **是** | `REDIS_PASSWORD`、`UI_PORT`、`MEDIAMTX_PUBLIC_HOST`、`INFERENCE_USE_GPU`、推理镜像名等 |
 | `app_config.json` | **是** | 全局路径、默认模型、推理参数 |
 | `localdata/camera_ips.json` | **是** | 摄像头与流类型（`publisher` / `rtsp_pull` / `external`） |
-| `localdata/mediamtx.yml` | 建议 | 首次可由应用生成；离线包可带模板 `deploy/mediamtx.yml.template` |
+| `localdata/mediamtx.yml` | 安装时生成 | 离线包**不**携带源机文件；`install.sh` / `deploy/regenerate-mediamtx-config.sh` 按 `.env` 生成 |
 | `localdata/runtime_config.json` | 否 | 系统设置页保存的全局覆盖 |
 | `localdata/auth_*.json` | 视需求 | 本地登录 |
 
@@ -208,6 +208,8 @@ cd visual-dps-offline-complete-*/
 ./install.sh --host <IP> --stop-infer
 ```
 
+`install.sh` 在启动前会生成 `app/localdata/mediamtx.yml`。改 `MEDIAMTX_PUBLIC_HOST` / 流媒体端口后需在 UI「应用 MediaMTX 配置」或运行 `app/deploy/regenerate-mediamtx-config.sh`。
+
 `weights/` → `app/localdata/models/`。旧版单 tar.gz 包仍兼容。
 
 ---
@@ -234,7 +236,9 @@ cd visual-dps-offline-complete-*/
 | CPU 推理 | `./scripts/build-inference-lite-image.sh` |
 | GPU 推理（基底） | `./scripts/build-inference-lite-gpu-image.sh` |
 | GPU + ONNX 推理 | `./scripts/build-inference-lite-gpu-onnx-image.sh` |
-| **离线包（v2 目录）** | `./scripts/export-offline-complete.sh` |
+| **全量离线（推荐）** | `./scripts/export-offline-one-shot.sh` |
+| **仅重打离线包** | `./scripts/export-offline-complete.sh`（镜像已齐时） |
+| **打包前预检** | `./scripts/preflight-offline-export.sh --inference all` |
 | **权重清单** | `./deploy/generate-weights-manifest.sh weights/` |
 | **包内校验** | `./verify-package.sh`（打包末自动执行） |
 | **Skill** | `.cursor/skills/visual-dps-offline-package/SKILL.md` |

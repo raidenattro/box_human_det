@@ -74,12 +74,25 @@ def _nvidia_visible() -> bool:
     return os.path.exists("/dev/nvidia0")
 
 
+def _nvcuvid_available() -> bool:
+    """FFmpeg NVDEC（h264_cuvid / -hwaccel cuda）依赖 libnvcuvid，仅有 GPU 不够。"""
+    import ctypes.util
+
+    if ctypes.util.find_library("nvcuvid"):
+        return True
+    for lib in ("libnvcuvid.so.1", "libnvcuvid.so"):
+        for d in ("/usr/lib/x86_64-linux-gnu", "/usr/local/lib", "/usr/lib"):
+            if os.path.isfile(os.path.join(d, lib)):
+                return True
+    return False
+
+
 @lru_cache(maxsize=1)
 def probe_ffmpeg_decode_profile() -> FfmpegDecodeProfile:
     forced = os.environ.get("RTSP_DECODE_PROFILE", "").strip().lower()
     if forced in ("software", "cpu"):
         return FfmpegDecodeProfile(name="software")
-    if forced in ("cuda", "nvidia", "cuvid"):
+    if forced in ("cuda", "nvidia", "cuvid") and _nvcuvid_available():
         return FfmpegDecodeProfile(
             name="cuda",
             input_args=("-hwaccel", "cuda"),
@@ -90,7 +103,11 @@ def probe_ffmpeg_decode_profile() -> FfmpegDecodeProfile:
     hw = _hwaccels()
     dec = _decoders()
 
-    if _nvidia_visible() and ("cuda" in hw or "cuvid" in hw):
+    if (
+        _nvidia_visible()
+        and _nvcuvid_available()
+        and ("cuda" in hw or "cuvid" in hw)
+    ):
         if "h264_cuvid" in dec:
             return FfmpegDecodeProfile(
                 name="cuda",

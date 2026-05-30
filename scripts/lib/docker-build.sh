@@ -14,12 +14,15 @@ visual_dps_compose_build() {
   local repo="$2"
   local profile="${3:-}"
   export VISUAL_DPS_IMAGE_TAG="${VISUAL_DPS_IMAGE_TAG:-$(visual_dps_image_tag)}"
+  export DOCKER_BUILDKIT=1
+  export COMPOSE_DOCKER_CLI_BUILD=1
   local ref
   ref="$(visual_dps_tag_image "${repo}" "${VISUAL_DPS_IMAGE_TAG}")"
 
   echo "构建 ${ref}"
   echo "  APT_MIRROR=${APT_MIRROR}"
   echo "  PIP_INDEX=${PIP_INDEX}"
+  echo "  TORCH_INDEX=${TORCH_INDEX:-https://mirror.sjtu.edu.cn/pytorch-wheels/cu121}"
   echo "  GITHUB_PROXY_BASE=${GITHUB_PROXY_BASE:-<直连>}"
   echo "  HTTP_PROXY=${HTTP_PROXY:-<无>}"
 

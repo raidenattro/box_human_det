@@ -9,12 +9,14 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
+MEDIAMTX_HLS_PORT = os.environ.get("MEDIAMTX_HLS_PORT", "8888")
+MEDIAMTX_WEBRTC_PORT = os.environ.get("MEDIAMTX_WEBRTC_PORT", "8889")
 MEDIAMTX_HLS_BASE = os.environ.get(
-    "MEDIAMTX_HLS_BASE", f"http://127.0.0.1:{os.environ.get('MEDIAMTX_HLS_PORT', '8888')}"
+    "MEDIAMTX_HLS_BASE", f"http://127.0.0.1:{MEDIAMTX_HLS_PORT}"
 ).rstrip("/")
 MEDIAMTX_WEBRTC_BASE = os.environ.get(
     "MEDIAMTX_WEBRTC_BASE",
-    f"http://127.0.0.1:{os.environ.get('MEDIAMTX_WEBRTC_PORT', '8889')}",
+    f"http://127.0.0.1:{MEDIAMTX_WEBRTC_PORT}",
 ).rstrip("/")
 PROXY_TIMEOUT = float(os.environ.get("MEDIAMTX_PROXY_TIMEOUT", "15"))
 MEDIAMTX_PUBLIC_HOST = os.environ.get("MEDIAMTX_PUBLIC_HOST", "127.0.0.1")
@@ -81,7 +83,7 @@ async def proxy_hls(camera_id: str, path_slug: str, subpath: str, request: Reque
             status_code=502,
             content={
                 "error": f"无法连接 MediaMTX HLS（{MEDIAMTX_HLS_BASE}）：{exc}",
-                "hint": "请确认 MediaMTX 已启动且 hlsAddress 已开启（8888）",
+                "hint": f"请确认 MediaMTX 已启动且 hlsAddress 已开启（{MEDIAMTX_HLS_PORT}），并已在 UI 应用 MediaMTX 配置",
             },
         )
 
@@ -108,7 +110,10 @@ async def proxy_whep(path_slug: str, request: Request) -> Response:
             status_code=502,
             content={
                 "error": f"无法连接 MediaMTX WebRTC（{MEDIAMTX_WEBRTC_BASE}）：{exc}",
-                "hint": "请确认 MediaMTX 已启动且 webrtcAddress 已开启（8889），并重启 MediaMTX 加载新配置",
+                "hint": (
+                    f"请确认 MediaMTX 已启动且 webrtcAddress 已开启（{MEDIAMTX_WEBRTC_PORT}），"
+                    "并已在 UI 应用 MediaMTX 配置后重启 mediamtx"
+                ),
             },
         )
 

@@ -23,7 +23,7 @@ async function startWhep(whepUrl, videoEl, pcRef, onIceFailed) {
     const st = pc.iceConnectionState;
     if (st === 'failed' || st === 'disconnected') {
       onIceFailed?.(
-        'WebRTC 媒体连接失败，请确认已映射 UDP/TCP 8189（MEDIAMTX_WEBRTC_ICE_PORT）且 MEDIAMTX_PUBLIC_HOST 为浏览器访问的 IP',
+        'WebRTC 媒体连接失败，请确认已映射 UDP/TCP（.env 中 MEDIAMTX_WEBRTC_ICE_PORT）且 MEDIAMTX_PUBLIC_HOST 为浏览器访问的 IP',
       );
     }
   };
@@ -162,7 +162,7 @@ export function usePreviewStream({ format, playback, mjpegSrc, videoRef, imgRef,
           if (!cancelled) {
             const msg = err?.message || 'WebRTC 连接失败';
             if (err?.name === 'TypeError' && /fetch|network/i.test(msg)) {
-              setStreamError('无法连接 WebRTC 信令，请确认 MediaMTX 已启动（8889）');
+              setStreamError('无法连接 WebRTC 信令，请确认 MediaMTX 已启动且端口与 .env 中 MEDIAMTX_WEBRTC_PORT 一致');
             } else {
               setStreamError(msg);
             }

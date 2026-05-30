@@ -12,6 +12,7 @@ load_build_env() {
 
   export APT_MIRROR="${APT_MIRROR:-mirrors.aliyun.com}"
   export PIP_INDEX="${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+  export TORCH_INDEX="${TORCH_INDEX:-https://mirror.sjtu.edu.cn/pytorch-wheels/cu121}"
   export GITHUB_PROXY_BASE="${GITHUB_PROXY_BASE:-}"
   export OPENMMLAB_MIRROR_BASE="${OPENMMLAB_MIRROR_BASE:-}"
 
@@ -22,7 +23,7 @@ load_build_env() {
     export http_proxy="${HTTP_PROXY}"
     export https_proxy="${HTTPS_PROXY}"
   else
-    # 从 .env 继承的 WSL 代理在 Linux 宿主机上无效，避免 docker build 卡死
+    # WSL 的 172.26 代理在 docker build 内常无法解析 host.docker.internal，勿传入（pip 走国内镜像）
     if [[ "${HTTP_PROXY:-}" == *"172.26."* ]] || [[ "${HTTPS_PROXY:-}" == *"172.26."* ]]; then
       unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
     fi

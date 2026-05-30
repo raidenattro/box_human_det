@@ -37,6 +37,7 @@ usage() {
   --compress TOOL           gzip | pigz | zstd（仅 --archive tar.gz，默认 pigz）
   --split SIZE              对外层归档分卷（如 2G）
   --env-file PATH           打入 app/.env 的模板
+  SKIP_PREFLIGHT=1          跳过 preflight-offline-export.sh
   -h, --help
 EOF
 }
@@ -121,7 +122,30 @@ resolve_repo_tag() {
   docker images --format '{{.Repository}}:{{.Tag}}' "${repo}" 2>/dev/null | grep -v ':<none>' | grep -v ':latest' | sort | tail -n 1 || true
 }
 
+# 推理镜像与 UI 同 VISUAL_DPS_IMAGE_TAG；勿在 all 模式误用陈旧的 :latest
+resolve_inference_repo_tag() {
+  local repo="$1"
+  local preferred="${2:-}"
+  if [[ -n "${preferred}" ]] && docker image inspect "${preferred}" >/dev/null 2>&1; then
+    echo "${preferred}"
+    return
+  fi
+  local tag="${VISUAL_DPS_IMAGE_TAG:-}"
+  if [[ -n "${tag}" ]] && docker image inspect "${repo}:${tag}" >/dev/null 2>&1; then
+    echo "${repo}:${tag}"
+    return
+  fi
+  resolve_repo_tag "${repo}" ""
+}
+
 IMAGES=()
+if [[ "${SKIP_PREFLIGHT:-0}" != "1" ]]; then
+  echo "==> 打包预检..."
+  PREFLIGHT_ARGS=(--inference "${INFERENCE_MODE}")
+  [[ "${INCLUDE_MODELS}" -eq 0 ]] && PREFLIGHT_ARGS+=(--no-models)
+  "${ROOT}/scripts/preflight-offline-export.sh" "${PREFLIGHT_ARGS[@]}"
+fi
+
 echo "==> 收集镜像 (inference=${INFERENCE_MODE})..."
 EXPORTED_UI_IMAGE="$(resolve_repo_tag "visual-dps-visual-dps-ui" "visual-dps-visual-dps-ui:${VISUAL_DPS_IMAGE_TAG:-}")"
 EXPORTED_EVENT_IMAGE="$(resolve_repo_tag "visual-dps-event-worker" "visual-dps-event-worker:${VISUAL_DPS_IMAGE_TAG:-}")"
@@ -142,7 +166,7 @@ done
 case "${INFERENCE_MODE}" in
   base) ;;
   lite)
-    lite="$(resolve_repo_tag "visual-dps-inference-lite" "${INFERENCE_LITE_IMAGE:-}")"
+    lite="$(resolve_inference_repo_tag "visual-dps-inference-lite" "${INFERENCE_LITE_IMAGE:-}")"
     [[ -n "${lite}" ]] || { echo "错误: 缺少 visual-dps-inference-lite" >&2; exit 1; }
     require_image "${lite}"
     IMAGES+=("${lite}")
@@ -150,7 +174,7 @@ case "${INFERENCE_MODE}" in
     echo "  + ${lite}"
     ;;
   gpu)
-    gpu="$(resolve_repo_tag "visual-dps-inference-lite-gpu" "${INFERENCE_LITE_GPU_IMAGE:-}")"
+    gpu="$(resolve_inference_repo_tag "visual-dps-inference-lite-gpu" "${INFERENCE_LITE_GPU_IMAGE:-}")"
     [[ -n "${gpu}" ]] || { echo "错误: 缺少 visual-dps-inference-lite-gpu" >&2; exit 1; }
     require_image "${gpu}"
     IMAGES+=("${gpu}")
@@ -158,7 +182,7 @@ case "${INFERENCE_MODE}" in
     echo "  + ${gpu}"
     ;;
   gpu-onnx)
-    onnx="$(resolve_repo_tag "visual-dps-inference-lite-gpu-onnx" "${INFERENCE_LITE_GPU_ONNX_IMAGE:-}")"
+    onnx="$(resolve_inference_repo_tag "visual-dps-inference-lite-gpu-onnx" "${INFERENCE_LITE_GPU_ONNX_IMAGE:-}")"
     [[ -n "${onnx}" ]] || { echo "错误: 缺少 visual-dps-inference-lite-gpu-onnx" >&2; exit 1; }
     require_image "${onnx}"
     IMAGES+=("${onnx}")
@@ -166,9 +190,9 @@ case "${INFERENCE_MODE}" in
     echo "  + ${onnx}"
     ;;
   all)
-    lite="$(resolve_repo_tag "visual-dps-inference-lite" "")"
-    gpu="$(resolve_repo_tag "visual-dps-inference-lite-gpu" "")"
-    onnx="$(resolve_repo_tag "visual-dps-inference-lite-gpu-onnx" "")"
+    lite="$(resolve_inference_repo_tag "visual-dps-inference-lite" "")"
+    gpu="$(resolve_inference_repo_tag "visual-dps-inference-lite-gpu" "")"
+    onnx="$(resolve_inference_repo_tag "visual-dps-inference-lite-gpu-onnx" "")"
     [[ -n "${lite}" && -n "${gpu}" && -n "${onnx}" ]] || {
       echo "错误: 完整包需要 lite、lite-gpu、lite-gpu-onnx 镜像" >&2
       exit 1
@@ -230,12 +254,13 @@ else
 fi
 
 mkdir -p "${APP}/localdata/json/cameras" "${APP}/localdata/logs" "${APP}/localdata/inference" "${APP}/localdata/frames"
-RSYNC_EXCLUDES=(--exclude 'models/**' --exclude 'logs/**' --exclude 'frames/**' --exclude 'inference/**' --exclude 'upload/**' --exclude 'last_frame.jpg' --exclude 'json/annotation_*.json')
+RSYNC_EXCLUDES=(--exclude 'models/**' --exclude 'logs/**' --exclude 'frames/**' --exclude 'inference/**' --exclude 'upload/**' --exclude 'last_frame.jpg' --exclude 'json/annotation_*.json' --exclude 'mediamtx.yml')
 if [[ -d "${ROOT}/localdata" ]] && command -v rsync >/dev/null 2>&1; then
   rsync -a "${RSYNC_EXCLUDES[@]}" "${ROOT}/localdata/" "${APP}/localdata/"
 fi
 [[ -f "${APP}/localdata/camera_ips.json" ]] || cp "${ROOT}/deploy/camera_ips.example.json" "${APP}/localdata/camera_ips.json"
-[[ -f "${APP}/localdata/mediamtx.yml" ]] || cp "${ROOT}/deploy/mediamtx.yml.template" "${APP}/localdata/mediamtx.yml"
+# 不打包源机 mediamtx.yml；目标机 install.sh 会按 .env 重新生成
+rm -f "${APP}/localdata/mediamtx.yml"
 [[ -f "${APP}/localdata/json/precise_boxes_new.json" ]] || echo '{}' > "${APP}/localdata/json/precise_boxes_new.json"
 
 MODEL_CHECK_NOTE="models: excluded"
